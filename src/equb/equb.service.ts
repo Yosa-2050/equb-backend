@@ -1,0 +1,446 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { randomBytes } from 'crypto';
+import { In, Repository } from 'typeorm';
+import { User } from '../users/entities/user.entity';
+import { Payment } from '../payments/entities/payment.entity';
+import { AddMemberDto } from './dto/add-member.dto';
+import { CreateEqubDto } from './dto/create-equb.dto';
+import { UpdateEqubDto } from './dto/update-equb.dto';
+import { UpdateMyMembershipDto } from './dto/update-my-membership.dto';
+import { EqubMember, EqubMemberRole } from './entities/equb-member.entity';
+import { Equb, EqubStatus } from './entities/equb.entity';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
+
+const toNumber = (value: string | number): number => Number(value);
+
+export interface EqubSummary {
+  id: string;
+  name: string;
+  monthlyAmount: number;
+  totalAmount: number;
+  durationMonths: number;
+  inviteCode: string;
+  status: EqubStatus;
+  isPublic: boolean;
+  admin: { id: string; fullName: string; telegramUsername: string };
+  membersCount: number;
+  createdAt: Date;
+}
+
+@Injectable()
+export class EqubService {
+  constructor(
+    @InjectRepository(Equb)
+    private readonly equbRepository: Repository<Equb>,
+    @InjectRepository(EqubMember)
+    private readonly equbMemberRepository: Repository<EqubMember>,
+    @InjectRepository(Payment)
+    private readonly paymentRepository: Repository<Payment>,
+    @InjectRepository(User)
+    private readonly userRepository: Repository<User>,
+    private readonly notificationsService: NotificationsService,
+  ) {}
+
+  async create(dto: CreateEqubDto, userId: string): Promise<Equb> {
+    const equb = this.equbRepository.create({
+      name: dto.name,
+      monthlyAmount: dto.monthlyAmount,
+      durationMonths: dto.durationMonths,
+      totalAmount: dto.totalAmount,
+      totalPot: toNumber(dto.monthlyAmount) * dto.durationMonths,
+      isPublic: dto.isPublic ?? true,
+      description: dto.description,
+      inviteCode: this.generateInviteCode(),
+      adminId: userId,
+    });
+    const saved = await this.equbRepository.save(equb);
+    await this.equbMemberRepository.save(
+      this.equbMemberRepository.create({
+        equbId: saved.id,
+        userId,
+        role: EqubMemberRole.ADMIN,
+      }),
+    );
+    return saved;
+  }
+
+  async findAllPublic(): Promise<EqubSummary[]> {
+    const equbs = await this.equbRepository.find({
+      where: { isPublic: true, status: EqubStatus.ACTIVE },
+      relations: ['admin', 'members'],
+      order: { createdAt: 'DESC' },
+    });
+    return equbs.map((e) => this.summary(e));
+  }
+
+  async findMine(userId: string): Promise<EqubSummary[]> {
+    const memberships = await this.equbMemberRepository.find({
+      where: { userId },
+      relations: ['equb', 'equb.admin', 'equb.members'],
+    });
+    return memberships
+      .map((m) => m.equb)
+      .sort(
+        (a, b) =>
+          new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
+      )
+      .map((e) => this.summary(e));
+  }
+
+  async findOne(id: string): Promise<Equb> {
+    const equb = await this.equbRepository.findOne({
+      where: { id },
+      relations: ['admin'],
+    });
+    if (!equb) {
+      throw new NotFoundException('Equb not found');
+    }
+    return equb;
+  }
+
+  async findDetail(id: string, actorId: string) {
+    const equb = await this.findOne(id);
+    const memberships = await this.equbMemberRepository.find({
+      where: { equbId: id },
+      relations: ['user'],
+      order: { order: 'ASC' },
+    });
+    const memberRows = memberships
+      .filter((m) => m.user)
+      .map((m, index) => ({
+        id: m.id,
+        number: index + 1,
+        fullName: m.user.fullName,
+        telegramUsername: m.user.telegramUsername,
+        role: m.role,
+        order: m.order,
+        contributionAmount: m.contributionAmount
+          ? toNumber(m.contributionAmount)
+          : null,
+        account: {
+          provider: m.accountProvider,
+          number: m.accountNumber,
+          holderName: m.accountHolderName,
+        },
+      }));
+    const adminMember = memberships.find(
+      (m) => m.role === EqubMemberRole.ADMIN,
+    );
+    return {
+      id: equb.id,
+      name: equb.name,
+      monthlyAmount: toNumber(equb.monthlyAmount),
+      totalPot: toNumber(equb.totalPot),
+      totalAmount: toNumber(equb.totalAmount),
+      durationMonths: equb.durationMonths,
+      inviteCode: equb.inviteCode,
+      status: equb.status,
+      isPublic: equb.isPublic,
+      description: equb.description,
+      currentRound: equb.currentRound,
+      nextDrawDate: equb.nextDrawDate,
+      createdAt: equb.createdAt,
+      admin: {
+        id: adminMember?.userId ?? equb.adminId,
+        fullName: equb.admin?.fullName,
+        telegramUsername: equb.admin?.telegramUsername,
+      },
+      isAdmin: !!adminMember && adminMember.userId === actorId,
+      isMember: memberships.some((m) => m.userId === actorId),
+      membersCount: memberRows.length,
+      members: memberRows,
+    };
+  }
+
+  async findByInviteCode(inviteCode: string): Promise<Equb> {
+    const equb = await this.equbRepository.findOne({
+      where: { inviteCode: inviteCode.toUpperCase() },
+      relations: ['admin'],
+    });
+    if (!equb) {
+      throw new NotFoundException('Equb not found for this invite link');
+    }
+    return equb;
+  }
+
+  async update(id: string, dto: UpdateEqubDto, actorId: string): Promise<Equb> {
+    await this.assertAdmin(id, actorId);
+    const equb = await this.findOne(id);
+    equb.name = dto.name ?? equb.name;
+    equb.isPublic = dto.isPublic ?? equb.isPublic;
+    if (dto.description !== undefined) equb.description = dto.description;
+    if (dto.monthlyAmount !== undefined) {
+      equb.monthlyAmount = dto.monthlyAmount;
+      equb.totalPot = toNumber(dto.monthlyAmount) * equb.durationMonths;
+    }
+    if (dto.durationMonths !== undefined) {
+      equb.durationMonths = dto.durationMonths;
+      equb.totalPot = toNumber(equb.monthlyAmount) * dto.durationMonths;
+    }
+    if (dto.totalAmount !== undefined) {
+      equb.totalAmount = dto.totalAmount;
+    }
+    return this.equbRepository.save(equb);
+  }
+
+  async close(id: string, actorId: string): Promise<Equb> {
+    await this.assertAdmin(id, actorId);
+    const equb = await this.findOne(id);
+    equb.status = EqubStatus.COMPLETED;
+    return this.equbRepository.save(equb);
+  }
+
+  // Called once a month's contributions are fully collected. Moves to the
+  // next month, or marks the equb completed if that was the last one.
+  async advanceRound(id: string): Promise<Equb> {
+    const equb = await this.findOne(id);
+    if (equb.currentRound >= equb.durationMonths) {
+      equb.status = EqubStatus.COMPLETED;
+    } else {
+      equb.currentRound += 1;
+    }
+    return this.equbRepository.save(equb);
+  }
+
+  async remove(id: string, actorId: string): Promise<{ success: boolean }> {
+    await this.assertAdmin(id, actorId);
+    const members = await this.equbMemberRepository.find({
+      where: { equbId: id },
+    });
+    const memberIds = members.map((m) => m.id);
+    if (memberIds.length) {
+      await this.paymentRepository.delete({ recipientId: In(memberIds) });
+      await this.paymentRepository.delete({ equbMemberId: In(memberIds) });
+    }
+    await this.equbMemberRepository.delete({ equbId: id });
+    await this.equbRepository.delete(id);
+    return { success: true };
+  }
+
+  async addMember(
+    equbId: string,
+    dto: AddMemberDto,
+    actorId: string,
+  ): Promise<EqubMember> {
+    await this.assertAdmin(equbId, actorId);
+    await this.findOne(equbId);
+
+    if (!dto.userId && !dto.fullName) {
+      throw new BadRequestException('Provide a userId or a fullName');
+    }
+
+    let userId = dto.userId;
+    if (!userId) {
+      // Manually-added member: create a placeholder user record so the member
+      // can be managed until they join via Telegram.
+      const newUser = await this.userRepository.save(
+        this.userRepository.create({
+          telegramId: String(
+            Math.floor(1000000000000000 + Math.random() * 9e15),
+          ),
+          telegramUsername:
+            dto.telegramUsername ?? dto.fullName?.toLowerCase().replace(/\s+/g, '.'),
+          fullName: dto.fullName,
+        }),
+      );
+      userId = newUser.id;
+    }
+
+    const existing = await this.equbMemberRepository.findOne({
+      where: { equbId, userId },
+    });
+    if (existing) {
+      throw new BadRequestException('This user is already a member');
+    }
+
+    const member = this.equbMemberRepository.create({
+      equbId,
+      userId,
+      role: EqubMemberRole.MEMBER,
+      accountProvider: dto.accountProvider,
+      accountNumber: dto.accountNumber,
+      accountHolderName: dto.accountHolderName,
+    });
+    return this.equbMemberRepository.save(member);
+  }
+
+  // Self-service edit: a member updates their own display name and payout
+  // account details for this equb.
+  async updateMyMembership(
+    equbId: string,
+    userId: string,
+    dto: UpdateMyMembershipDto,
+  ): Promise<EqubMember> {
+    const member = await this.equbMemberRepository.findOne({
+      where: { equbId, userId },
+      relations: ['user'],
+    });
+    if (!member) {
+      throw new ForbiddenException('You are not a member of this equb');
+    }
+
+    if (dto.fullName !== undefined) {
+      await this.userRepository.update(userId, { fullName: dto.fullName });
+    }
+    if (dto.accountProvider !== undefined) {
+      member.accountProvider = dto.accountProvider;
+    }
+    if (dto.accountNumber !== undefined) {
+      member.accountNumber = dto.accountNumber;
+    }
+    if (dto.accountHolderName !== undefined) {
+      member.accountHolderName = dto.accountHolderName;
+    }
+    if (dto.contributionAmount !== undefined) {
+      member.contributionAmount = dto.contributionAmount;
+    }
+    return this.equbMemberRepository.save(member);
+  }
+
+  async removeMember(
+    equbId: string,
+    memberId: string,
+    actorId: string,
+  ): Promise<{ success: boolean }> {
+    await this.assertAdmin(equbId, actorId);
+    const member = await this.equbMemberRepository.findOne({
+      where: { id: memberId, equbId },
+    });
+    if (!member) {
+      throw new NotFoundException('Member not found');
+    }
+    if (member.role === EqubMemberRole.ADMIN) {
+      throw new ForbiddenException('Cannot remove the equb admin');
+    }
+    await this.equbMemberRepository.delete({ id: member.id });
+    return { success: true };
+  }
+
+  async join(equbId: string, userId: string): Promise<EqubMember> {
+    const equb = await this.findOne(equbId);
+    const existing = await this.equbMemberRepository.findOne({
+      where: { equbId, userId },
+    });
+    if (existing) {
+      return existing;
+    }
+    if (!equb.isPublic) {
+      throw new ForbiddenException(
+        'This is a private equb. Ask the admin to add you.',
+      );
+    }
+    const member = this.equbMemberRepository.create({
+      equbId,
+      userId,
+      role: EqubMemberRole.MEMBER,
+    });
+    const saved = await this.equbMemberRepository.save(member);
+    await this.notifyOnJoin(equb, userId);
+    return saved;
+  }
+
+  // Joins via a Telegram invite link. Bypasses the private/public check because
+  // possession of the invite link is what grants access.
+  async joinByInvite(equbId: string, userId: string): Promise<EqubMember> {
+    const equb = await this.findOne(equbId);
+    const existing = await this.equbMemberRepository.findOne({
+      where: { equbId, userId },
+    });
+    if (existing) {
+      return existing;
+    }
+    const member = this.equbMemberRepository.create({
+      equbId,
+      userId,
+      role: EqubMemberRole.MEMBER,
+    });
+    const saved = await this.equbMemberRepository.save(member);
+    await this.notifyOnJoin(equb, userId);
+    return saved;
+  }
+
+  // Confirms the join to the new member and tells every existing member
+  // (including the admin) who just joined.
+  private async notifyOnJoin(
+    equb: Equb,
+    newMemberUserId: string,
+  ): Promise<void> {
+    const newMember = await this.userRepository.findOne({
+      where: { id: newMemberUserId },
+    });
+    if (!newMember) return;
+
+    await this.notificationsService.create({
+      userId: newMemberUserId,
+      title: 'Equb Joined',
+      description: `You joined "${equb.name}". Welcome!`,
+      type: NotificationType.SUCCESS,
+    });
+
+    const existingMembers = await this.equbMemberRepository.find({
+      where: { equbId: equb.id },
+    });
+    const others = existingMembers.filter(
+      (m) => m.userId !== newMemberUserId,
+    );
+    await Promise.all(
+      others.map((m) =>
+        this.notificationsService.create({
+          userId: m.userId,
+          title: 'New Member Joined',
+          description: `${newMember.fullName} joined ${equb.name}.`,
+          type: NotificationType.INFO,
+        }),
+      ),
+    );
+  }
+
+  async getMembers(equbId: string): Promise<EqubMember[]> {
+    return this.equbMemberRepository.find({
+      where: { equbId },
+      relations: ['user'],
+      order: { order: 'ASC' },
+    });
+  }
+
+  async assertAdmin(equbId: string, userId: string): Promise<EqubMember> {
+    const member = await this.equbMemberRepository.findOne({
+      where: { equbId, userId, role: EqubMemberRole.ADMIN },
+    });
+    if (!member) {
+      throw new ForbiddenException('Only the equb admin can do this');
+    }
+    return member;
+  }
+
+  private summary(equb: Equb): EqubSummary {
+    return {
+      id: equb.id,
+      name: equb.name,
+      monthlyAmount: toNumber(equb.monthlyAmount),
+      totalAmount: toNumber(equb.totalAmount),
+      durationMonths: equb.durationMonths,
+      inviteCode: equb.inviteCode,
+      status: equb.status,
+      isPublic: equb.isPublic,
+      admin: {
+        id: equb.adminId,
+        fullName: equb.admin?.fullName,
+        telegramUsername: equb.admin?.telegramUsername,
+      },
+      membersCount: Number(equb.members?.length ?? 0),
+      createdAt: equb.createdAt,
+    };
+  }
+
+  private generateInviteCode(): string {
+    return randomBytes(4).toString('hex').toUpperCase();
+  }
+}

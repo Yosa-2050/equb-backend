@@ -1,0 +1,317 @@
+import {
+  BadRequestException,
+  ForbiddenException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
+import { InjectRepository } from '@nestjs/typeorm';
+import { In, Repository } from 'typeorm';
+import { EqubService } from '../equb/equb.service';
+import { EqubMember } from '../equb/entities/equb-member.entity';
+import { Equb, EqubStatus } from '../equb/entities/equb.entity';
+import { NotificationsService } from '../notifications/notifications.service';
+import { NotificationType } from '../notifications/entities/notification.entity';
+import { Payment, PaymentStatus } from './entities/payment.entity';
+
+const toNumber = (value: string | number): number => Number(value);
+
+@Injectable()
+export class PaymentsService {
+  constructor(
+    @InjectRepository(Payment)
+    private readonly paymentRepository: Repository<Payment>,
+    @InjectRepository(EqubMember)
+    private readonly equbMemberRepository: Repository<EqubMember>,
+    private readonly equbService: EqubService,
+    private readonly notificationsService: NotificationsService,
+  ) {}
+
+  // A member's contribution for this equb: their own override if set,
+  // otherwise the equb's flat monthly rate.
+  private memberAmount(equb: { monthlyAmount: string | number }, member: EqubMember): number {
+    return member.contributionAmount !== null
+      ? toNumber(member.contributionAmount)
+      : toNumber(equb.monthlyAmount);
+  }
+
+  // Returns the state of one equb month: who receives the pot (the lottery
+  // winner for that month) and one payment row per other member.
+  async getMonth(equbId: string, month: number, actorId: string) {
+    const equb = await this.equbService.findOne(equbId);
+    const defaultAmount = toNumber(equb.monthlyAmount);
+
+    const memberships = await this.equbMemberRepository.find({
+      where: { equbId },
+      relations: ['user'],
+    });
+
+    const recipient =
+      memberships.find((m) => m.order !== null && m.order === month) ?? null;
+    const payerMembers = memberships.filter(
+      (m) => m.userId !== recipient?.userId,
+    );
+
+    // Ensure a payment row exists for every member who owes this month.
+    const seen = await this.paymentRepository.find({ where: { month } });
+    for (const member of payerMembers) {
+      if (!seen.some((p) => p.equbMemberId === member.id)) {
+        seen.push(
+          await this.paymentRepository.save(
+            this.paymentRepository.create({
+              equbMemberId: member.id,
+              recipientId: recipient?.id ?? null,
+              month,
+              amount: this.memberAmount(equb, member),
+              status: PaymentStatus.PENDING,
+            }),
+          ),
+        );
+      }
+    }
+
+    const rows = seen
+      .filter(
+        (p) =>
+          p.equbMemberId && payerMembers.some((m) => m.id === p.equbMemberId),
+      )
+      .map((p) => {
+        const member = payerMembers.find((m) => m.id === p.equbMemberId)!;
+        return {
+          id: p.id,
+          memberId: member.userId,
+          fullName: member.user.fullName,
+          telegramUsername: member.user.telegramUsername,
+          amount: toNumber(p.amount),
+          status: p.status,
+          receiptDate: p.receiptDate,
+        };
+      })
+      .sort((a, b) => (a.fullName < b.fullName ? -1 : 1));
+
+    const paidRows = rows.filter((r) => r.status === PaymentStatus.PAID);
+
+    return {
+      equbId,
+      month,
+      amount: defaultAmount,
+      isRecipient: recipient?.userId === actorId,
+      recipient: recipient?.user
+        ? {
+            memberId: recipient.userId,
+            fullName: recipient.user.fullName,
+            telegramUsername: recipient.user.telegramUsername,
+            account: {
+              provider: recipient.accountProvider,
+              number: recipient.accountNumber,
+            },
+          }
+        : null,
+      collected: paidRows.reduce((sum, r) => sum + r.amount, 0),
+      totalMembers: payerMembers.length,
+      paidCount: paidRows.length,
+      allCollected: paidRows.length === payerMembers.length,
+      payments: rows,
+    };
+  }
+
+  // A member submits a receipt for this month's contribution.
+  async submit(equbId: string, actorId: string, dto: { amount?: number }) {
+    const equb = await this.equbService.findOne(equbId);
+    const member = await this.equbMemberRepository.findOne({
+      where: { equbId, userId: actorId },
+      relations: ['user'],
+    });
+    if (!member) {
+      throw new ForbiddenException('You are not a member of this equb');
+    }
+
+    const month = equb.currentRound;
+    const recipient = await this.equbMemberRepository.findOne({
+      where: { equbId, order: month },
+    });
+    const defaultAmount = this.memberAmount(equb, member);
+
+    let payment = await this.paymentRepository.findOne({
+      where: { equbMemberId: member.id, month },
+    });
+    if (!payment) {
+      payment = this.paymentRepository.create({
+        equbMemberId: member.id,
+        recipientId: recipient?.id ?? null,
+        month,
+        amount: defaultAmount,
+        status: PaymentStatus.PENDING,
+      });
+    }
+
+    payment.amount = dto.amount ? toNumber(dto.amount) : defaultAmount;
+    payment.status = PaymentStatus.PENDING;
+    payment.receiptDate = new Date().toISOString().slice(0, 10);
+    payment.rejectReason = null;
+    return this.paymentRepository.save(payment);
+  }
+
+  async approve(paymentId: string, actorId: string) {
+    const payment = await this.paymentRepository.findOne({
+      where: { id: paymentId },
+      relations: [
+        'equbMember',
+        'equbMember.user',
+        'recipient',
+        'recipient.user',
+      ],
+    });
+    this.assertCanDecide(payment, actorId);
+    payment.status = PaymentStatus.PAID;
+    payment.rejectReason = null;
+    const saved = await this.paymentRepository.save(payment);
+
+    const equb = await this.equbService.findOne(payment.equbMember.equbId);
+    await this.notificationsService.create({
+      userId: payment.equbMember.userId,
+      title: 'Payment Approved',
+      description: `Your payment of ${toNumber(payment.amount)} ETB for ${equb.name} was approved.`,
+      type: NotificationType.SUCCESS,
+    });
+
+    if (await this.isMonthFullyCollected(equb.id, payment.month)) {
+      const updated = await this.equbService.advanceRound(equb.id);
+      await this.notifyRoundAdvanced(updated, payment.month);
+    }
+
+    return saved;
+  }
+
+  // Whether every payer for this month has a PAID payment row.
+  private async isMonthFullyCollected(
+    equbId: string,
+    month: number,
+  ): Promise<boolean> {
+    const memberships = await this.equbMemberRepository.find({
+      where: { equbId },
+    });
+    const recipient = memberships.find((m) => m.order === month) ?? null;
+    const payerMembers = memberships.filter(
+      (m) => m.userId !== recipient?.userId,
+    );
+    if (payerMembers.length === 0) return false;
+
+    const payments = await this.paymentRepository.find({
+      where: { month, equbMemberId: In(payerMembers.map((m) => m.id)) },
+    });
+    return payerMembers.every((m) =>
+      payments.some(
+        (p) => p.equbMemberId === m.id && p.status === PaymentStatus.PAID,
+      ),
+    );
+  }
+
+  private async notifyRoundAdvanced(
+    equb: Equb,
+    completedMonth: number,
+  ): Promise<void> {
+    const members = await this.equbMemberRepository.find({
+      where: { equbId: equb.id },
+    });
+    const isComplete = equb.status === EqubStatus.COMPLETED;
+    await Promise.all(
+      members.map((m) =>
+        this.notificationsService.create({
+          userId: m.userId,
+          title: isComplete ? 'Equb Complete' : 'Month Complete',
+          description: isComplete
+            ? `${equb.name} has finished all ${equb.durationMonths} months. Thanks for participating!`
+            : `Month ${completedMonth} is fully collected for ${equb.name}. Round ${equb.currentRound} has started.`,
+          type: NotificationType.SUCCESS,
+        }),
+      ),
+    );
+  }
+
+  async reject(paymentId: string, actorId: string, reason?: string) {
+    const payment = await this.paymentRepository.findOne({
+      where: { id: paymentId },
+      relations: [
+        'equbMember',
+        'equbMember.user',
+        'recipient',
+        'recipient.user',
+      ],
+    });
+    this.assertCanDecide(payment, actorId);
+    payment.status = PaymentStatus.REJECTED;
+    payment.rejectReason = reason ?? null;
+    const saved = await this.paymentRepository.save(payment);
+
+    const equb = await this.equbService.findOne(payment.equbMember.equbId);
+    await this.notificationsService.create({
+      userId: payment.equbMember.userId,
+      title: 'Payment Rejected',
+      description: reason
+        ? `Your payment receipt for ${equb.name} was rejected: ${reason}`
+        : `Your payment receipt for ${equb.name} was rejected.`,
+      type: NotificationType.WARNING,
+    });
+    return saved;
+  }
+
+  // Admin-triggered: reminds every member who hasn't paid this month yet,
+  // telling them where to send the money (this month's recipient's account).
+  async remind(equbId: string, actorId: string): Promise<{ remindedCount: number }> {
+    await this.equbService.assertAdmin(equbId, actorId);
+    const equb = await this.equbService.findOne(equbId);
+    const month = equb.currentRound;
+
+    const memberships = await this.equbMemberRepository.find({
+      where: { equbId },
+      relations: ['user'],
+    });
+    const recipient =
+      memberships.find((m) => m.order !== null && m.order === month) ?? null;
+    const payerMembers = memberships.filter(
+      (m) => m.userId !== recipient?.userId,
+    );
+
+    const payments = await this.paymentRepository.find({ where: { month } });
+    const unpaid = payerMembers.filter((member) => {
+      const payment = payments.find((p) => p.equbMemberId === member.id);
+      return !payment || payment.status !== PaymentStatus.PAID;
+    });
+
+    const accountInfo = recipient
+      ? `${recipient.accountHolderName ?? recipient.user.fullName} — ${recipient.accountProvider ?? 'account'}: ${recipient.accountNumber ?? 'N/A'}`
+      : 'the recipient (not yet drawn)';
+
+    await Promise.all(
+      unpaid.map((member) =>
+        this.notificationsService.create({
+          userId: member.userId,
+          title: 'Monthly Payment Reminder',
+          description: `Pay your ${this.memberAmount(equb, member)} ETB contribution for ${equb.name} (month ${month}) to: ${accountInfo}`,
+          type: NotificationType.WARNING,
+        }),
+      ),
+    );
+
+    return { remindedCount: unpaid.length };
+  }
+
+  // Only the recipient of the month may approve/reject, and they may not
+  // decide on their own payment.
+  private assertCanDecide(
+    payment: Payment | null,
+    actorId: string,
+  ): asserts payment is Payment {
+    if (!payment) {
+      throw new NotFoundException('Payment not found');
+    }
+    if (payment.recipient?.userId !== actorId) {
+      throw new ForbiddenException(
+        'Only the month recipient can approve or reject payments',
+      );
+    }
+    if (payment.equbMember?.userId === actorId) {
+      throw new BadRequestException('You cannot approve your own payment');
+    }
+  }
+}
