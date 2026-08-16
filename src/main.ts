@@ -6,7 +6,6 @@ import { AppModule } from './app.module';
 async function bootstrap() {
   const app = await NestFactory.create(AppModule);
 
-  /
   const isProduction = process.env.NODE_ENV === 'production';
   const allowedOrigins = (process.env.CORS_ORIGIN ?? '')
     .split(',')
