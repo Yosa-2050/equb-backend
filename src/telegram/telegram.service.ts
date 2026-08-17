@@ -1,4 +1,4 @@
-import { Injectable } from '@nestjs/common';
+import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { Start, Update } from 'nestjs-telegraf';
 import { Context, Markup } from 'telegraf';
@@ -8,6 +8,8 @@ import { UsersService } from '../users/users.service';
 @Injectable()
 @Update()
 export class TelegramService {
+  private readonly logger = new Logger(TelegramService.name);
+
   constructor(
     private readonly usersService: UsersService,
     private readonly equbService: EqubService,
@@ -17,6 +19,7 @@ export class TelegramService {
   @Start()
   async onStart(ctx: Context & { startPayload?: string }) {
     const from = ctx.from;
+    this.logger.log(`/start received from telegramId=${from?.id ?? 'unknown'}, payload=${ctx.startPayload ?? '(none)'}`);
     if (!from) return;
 
     await this.usersService.findOrCreateByTelegramId({
@@ -26,6 +29,7 @@ export class TelegramService {
     });
 
     const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
+    this.logger.log(`MINI_APP_URL=${miniAppUrl || '(not set)'}`);
     const inviteCode = ctx.startPayload;
 
     if (inviteCode) {
