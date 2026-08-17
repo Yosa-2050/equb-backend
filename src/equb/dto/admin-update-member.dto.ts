@@ -1,8 +1,8 @@
 import { IsNumber, IsOptional, IsPositive, IsString } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
 
-export class UpdateMyMembershipDto {
-  @ApiPropertyOptional({ description: 'Your display name' })
+export class AdminUpdateMemberDto {
+  @ApiPropertyOptional({ description: "The member's display name" })
   @IsString()
   @IsOptional()
   fullName?: string;
@@ -12,7 +12,7 @@ export class UpdateMyMembershipDto {
   @IsOptional()
   phone?: string;
 
-  @ApiPropertyOptional({ example: 'Telebirr' })
+  @ApiPropertyOptional({ example: 'CBE' })
   @IsString()
   @IsOptional()
   accountProvider?: string;
@@ -29,7 +29,7 @@ export class UpdateMyMembershipDto {
 
   @ApiPropertyOptional({
     description:
-      'Your monthly contribution for this equb. Omit/clear to use the equb default.',
+      "This member's monthly contribution. Omit/clear to use the equb default.",
   })
   @IsNumber()
   @IsPositive()

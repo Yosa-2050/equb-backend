@@ -6,11 +6,14 @@ import {
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { randomBytes } from 'crypto';
+import { InjectBot } from 'nestjs-telegraf';
+import { Markup, Telegraf } from 'telegraf';
 import { In, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Payment } from '../payments/entities/payment.entity';
-import { AddMemberDto } from './dto/add-member.dto';
+import { AdminUpdateMemberDto } from './dto/admin-update-member.dto';
 import { CreateEqubDto } from './dto/create-equb.dto';
+import { NotifyMembersDto } from './dto/notify-members.dto';
 import { UpdateEqubDto } from './dto/update-equb.dto';
 import { UpdateMyMembershipDto } from './dto/update-my-membership.dto';
 import { EqubMember, EqubMemberRole } from './entities/equb-member.entity';
@@ -46,6 +49,7 @@ export class EqubService {
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
     private readonly notificationsService: NotificationsService,
+    @InjectBot() private readonly bot: Telegraf,
   ) {}
 
   async create(dto: CreateEqubDto, userId: string): Promise<Equb> {
@@ -224,53 +228,6 @@ export class EqubService {
     return { success: true };
   }
 
-  async addMember(
-    equbId: string,
-    dto: AddMemberDto,
-    actorId: string,
-  ): Promise<EqubMember> {
-    await this.assertAdmin(equbId, actorId);
-    await this.findOne(equbId);
-
-    if (!dto.userId && !dto.fullName) {
-      throw new BadRequestException('Provide a userId or a fullName');
-    }
-
-    let userId = dto.userId;
-    if (!userId) {
-      // Manually-added member: create a placeholder user record so the member
-      // can be managed until they join via Telegram.
-      const newUser = await this.userRepository.save(
-        this.userRepository.create({
-          telegramId: String(
-            Math.floor(1000000000000000 + Math.random() * 9e15),
-          ),
-          telegramUsername:
-            dto.telegramUsername ?? dto.fullName?.toLowerCase().replace(/\s+/g, '.'),
-          fullName: dto.fullName,
-        }),
-      );
-      userId = newUser.id;
-    }
-
-    const existing = await this.equbMemberRepository.findOne({
-      where: { equbId, userId },
-    });
-    if (existing) {
-      throw new BadRequestException('This user is already a member');
-    }
-
-    const member = this.equbMemberRepository.create({
-      equbId,
-      userId,
-      role: EqubMemberRole.MEMBER,
-      accountProvider: dto.accountProvider,
-      accountNumber: dto.accountNumber,
-      accountHolderName: dto.accountHolderName,
-    });
-    return this.equbMemberRepository.save(member);
-  }
-
   // Self-service edit: a member updates their own display name and payout
   // account details for this equb.
   async updateMyMembership(
@@ -286,8 +243,11 @@ export class EqubService {
       throw new ForbiddenException('You are not a member of this equb');
     }
 
-    if (dto.fullName !== undefined) {
-      await this.userRepository.update(userId, { fullName: dto.fullName });
+    if (dto.fullName !== undefined || dto.phone !== undefined) {
+      await this.userRepository.update(userId, {
+        ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+      });
     }
     if (dto.accountProvider !== undefined) {
       member.accountProvider = dto.accountProvider;
@@ -302,6 +262,67 @@ export class EqubService {
       member.contributionAmount = dto.contributionAmount;
     }
     return this.equbMemberRepository.save(member);
+  }
+
+  // Admin edit: lets the admin fill in/correct any member's contact and
+  // payout details, e.g. when a member never finished the bot's onboarding.
+  async adminUpdateMember(
+    equbId: string,
+    memberId: string,
+    actorId: string,
+    dto: AdminUpdateMemberDto,
+  ): Promise<EqubMember> {
+    await this.assertAdmin(equbId, actorId);
+    const member = await this.equbMemberRepository.findOne({
+      where: { id: memberId, equbId },
+      relations: ['user'],
+    });
+    if (!member) {
+      throw new NotFoundException('Member not found');
+    }
+
+    if (dto.fullName !== undefined || dto.phone !== undefined) {
+      await this.userRepository.update(member.userId, {
+        ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
+        ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
+      });
+    }
+    if (dto.accountProvider !== undefined) {
+      member.accountProvider = dto.accountProvider;
+    }
+    if (dto.accountNumber !== undefined) {
+      member.accountNumber = dto.accountNumber;
+    }
+    if (dto.accountHolderName !== undefined) {
+      member.accountHolderName = dto.accountHolderName;
+    }
+    if (dto.contributionAmount !== undefined) {
+      member.contributionAmount = dto.contributionAmount;
+    }
+    return this.equbMemberRepository.save(member);
+  }
+
+  // Admin broadcast: a free-form announcement to every member (in-app + bot DM).
+  async notifyMembers(
+    equbId: string,
+    actorId: string,
+    dto: NotifyMembersDto,
+  ): Promise<{ notifiedCount: number }> {
+    await this.assertAdmin(equbId, actorId);
+    const members = await this.equbMemberRepository.find({
+      where: { equbId },
+    });
+    await Promise.all(
+      members.map((m) =>
+        this.notificationsService.create({
+          userId: m.userId,
+          title: dto.title,
+          description: dto.message,
+          type: NotificationType.INFO,
+        }),
+      ),
+    );
+    return { notifiedCount: members.length };
   }
 
   async removeMember(
@@ -383,6 +404,22 @@ export class EqubService {
       description: `You joined "${equb.name}". Welcome!`,
       type: NotificationType.SUCCESS,
     });
+
+    // Prompt for payout info (phone/account) right away via the bot, since
+    // notificationsService.create() only sends plain text, not buttons.
+    if (newMember.telegramId) {
+      try {
+        await this.bot.telegram.sendMessage(
+          newMember.telegramId,
+          `One more thing — add your phone number and payout account for "${equb.name}" so we know where to send your month's payout.`,
+          Markup.inlineKeyboard([
+            Markup.button.callback('Add my payout info', `fillinfo:${equb.id}`),
+          ]),
+        );
+      } catch {
+        // Best-effort; user may have blocked the bot.
+      }
+    }
 
     const existingMembers = await this.equbMemberRepository.find({
       where: { equbId: equb.id },

@@ -10,8 +10,9 @@ import {
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthUser } from '../auth/telegram-auth.guard';
-import { AddMemberDto } from './dto/add-member.dto';
+import { AdminUpdateMemberDto } from './dto/admin-update-member.dto';
 import { CreateEqubDto } from './dto/create-equb.dto';
+import { NotifyMembersDto } from './dto/notify-members.dto';
 import { UpdateEqubDto } from './dto/update-equb.dto';
 import { UpdateMyMembershipDto } from './dto/update-my-membership.dto';
 import { EqubService } from './equb.service';
@@ -97,20 +98,6 @@ export class EqubController {
   }
 
   @ApiOperation({
-    summary: 'Add a member (admin only)',
-    description:
-      'Pass an existing userId, or a fullName (+ optional account details) to create a placeholder member.',
-  })
-  @Post(':id/members')
-  addMember(
-    @Param('id') id: string,
-    @Body() dto: AddMemberDto,
-    @CurrentUser() user: AuthUser,
-  ) {
-    return this.equbService.addMember(id, dto, user.id);
-  }
-
-  @ApiOperation({
     summary: 'Edit my own membership',
     description:
       'Lets the current member update their display name and payout account details for this equb.',
@@ -124,6 +111,21 @@ export class EqubController {
     return this.equbService.updateMyMembership(id, user.id, dto);
   }
 
+  @ApiOperation({
+    summary: "Edit a member's info (admin only)",
+    description:
+      "Lets the admin fill in or correct a member's display name, phone, and payout account details.",
+  })
+  @Patch(':id/members/:memberId')
+  adminUpdateMember(
+    @Param('id') id: string,
+    @Param('memberId') memberId: string,
+    @Body() dto: AdminUpdateMemberDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.equbService.adminUpdateMember(id, memberId, user.id, dto);
+  }
+
   @Delete(':id/members/:memberId')
   removeMember(
     @Param('id') id: string,
@@ -131,5 +133,19 @@ export class EqubController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.equbService.removeMember(id, memberId, user.id);
+  }
+
+  @ApiOperation({
+    summary: 'Send an announcement to every member (admin only)',
+    description:
+      'Delivers a title + message to every member as an in-app notification and a bot DM.',
+  })
+  @Post(':id/notify')
+  notifyMembers(
+    @Param('id') id: string,
+    @Body() dto: NotifyMembersDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.equbService.notifyMembers(id, user.id, dto);
   }
 }

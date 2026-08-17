@@ -4,6 +4,7 @@ import { EqubModule } from '../equb/equb.module';
 import { EqubMember } from '../equb/entities/equb-member.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { LotteryController } from './lottery.controller';
+import { LotteryGateway } from './lottery.gateway';
 import { LotteryService } from './lottery.service';
 
 @Module({
@@ -13,7 +14,7 @@ import { LotteryService } from './lottery.service';
     NotificationsModule,
   ],
   controllers: [LotteryController],
-  providers: [LotteryService],
+  providers: [LotteryService, LotteryGateway],
   exports: [LotteryService],
 })
 export class LotteryModule {}

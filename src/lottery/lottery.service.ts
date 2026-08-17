@@ -1,10 +1,12 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
+import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
 import { EqubService } from '../equb/equb.service';
 import { EqubMember } from '../equb/entities/equb-member.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
+import { LotteryGateway } from './lottery.gateway';
 
 export interface DrawResultDto {
   memberId: string;
@@ -21,7 +23,33 @@ export class LotteryService {
     private readonly equbMemberRepository: Repository<EqubMember>,
     private readonly equbService: EqubService,
     private readonly notificationsService: NotificationsService,
+    private readonly lotteryGateway: LotteryGateway,
+    private readonly configService: ConfigService,
   ) {}
+
+  // Admin-triggered: tells every member the live draw is starting, with a
+  // link straight into this equb's lottery page.
+  async announce(equbId: string): Promise<{ notifiedCount: number }> {
+    const equb = await this.equbService.findOne(equbId);
+    const members = await this.equbMemberRepository.find({
+      where: { equbId },
+    });
+    const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
+    const link = miniAppUrl ? ` ${miniAppUrl}/Equb/${equbId}/lottery` : '';
+
+    await Promise.all(
+      members.map((m) =>
+        this.notificationsService.create({
+          userId: m.userId,
+          title: 'Live Lottery Starting',
+          description: `The live draw for ${equb.name} is starting now — join in!${link}`,
+          type: NotificationType.INFO,
+        }),
+      ),
+    );
+
+    return { notifiedCount: members.length };
+  }
 
   async getDraws(equbId: string): Promise<{
     total: number;
@@ -90,18 +118,22 @@ export class LotteryService {
       type: NotificationType.SUCCESS,
     });
 
-    if (undrawn.length === 1) {
-      // This was the last undrawn member: the whole schedule is now final.
-      await this.notifyScheduleComplete(equbId, equb.name);
-    }
-
-    return {
+    const result: DrawResultDto = {
       memberId: saved.userId,
       number: nextMonth, // month is the payout slot; frontend number = roster position
       fullName: saved.user.fullName,
       telegramUsername: saved.user.telegramUsername,
       month: saved.order!,
     };
+
+    this.lotteryGateway.broadcastSpin(equbId, result);
+
+    if (undrawn.length === 1) {
+      // This was the last undrawn member: the whole schedule is now final.
+      await this.notifyScheduleComplete(equbId, equb.name);
+    }
+
+    return result;
   }
 
   private async notifyScheduleComplete(
@@ -126,6 +158,19 @@ export class LotteryService {
           type: NotificationType.SUCCESS,
         }),
       ),
+    );
+
+    this.lotteryGateway.broadcastComplete(
+      equbId,
+      finalMembers
+        .filter((m) => m.user)
+        .map((m, index) => ({
+          memberId: m.userId,
+          number: index + 1,
+          fullName: m.user.fullName,
+          telegramUsername: m.user.telegramUsername,
+          month: m.order,
+        })),
     );
   }
 }
