@@ -30,4 +30,18 @@ export class LotteryController {
     await this.equbService.assertAdmin(equbId, user.id);
     return this.lotteryService.spin(equbId);
   }
+
+  @ApiOperation({
+    summary: 'Announce a live lottery session (admin only)',
+    description:
+      "Notifies every member with a link straight into this equb's lottery page.",
+  })
+  @Post('announce')
+  async announce(
+    @Param('equbId') equbId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    await this.equbService.assertAdmin(equbId, user.id);
+    return this.lotteryService.announce(equbId);
+  }
 }

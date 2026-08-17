@@ -1,9 +1,11 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { Start, Update } from 'nestjs-telegraf';
-import { Context, Markup } from 'telegraf';
+import { Action, Command, Start, Update } from 'nestjs-telegraf';
+import { Context, Markup, Scenes } from 'telegraf';
 import { EqubService } from '../equb/equb.service';
 import { UsersService } from '../users/users.service';
+
+type SceneCapableContext = Context & Scenes.SceneContext;
 
 @Injectable()
 @Update()
@@ -56,5 +58,17 @@ export class TelegramService {
         ? Markup.inlineKeyboard([Markup.button.webApp('Open App', miniAppUrl)])
         : undefined,
     );
+  }
+
+  @Command('myinfo')
+  async onMyInfo(ctx: SceneCapableContext) {
+    await ctx.scene.enter('member-info');
+  }
+
+  @Action(/^fillinfo:(.+)$/)
+  async onFillInfo(ctx: SceneCapableContext & { match: RegExpExecArray }) {
+    const equbId = ctx.match[1];
+    await ctx.answerCbQuery();
+    await ctx.scene.enter('member-info', { equbId });
   }
 }
