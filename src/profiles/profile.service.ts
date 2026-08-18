@@ -7,6 +7,7 @@ import {
 } from '../equb/entities/equb-member.entity';
 import { Payment, PaymentStatus } from '../payments/entities/payment.entity';
 import { UsersService } from '../users/users.service';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 
 @Injectable()
 export class ProfileService {
@@ -49,5 +50,13 @@ export class ProfileService {
       joinedEqubs: memberships.length,
       totalSaved,
     };
+  }
+
+  async updateProfile(userId: string, dto: UpdateProfileDto) {
+    await this.usersService.update(userId, {
+      fullName: dto.fullName,
+      phone: dto.phone,
+    });
+    return this.getProfile(userId);
   }
 }
