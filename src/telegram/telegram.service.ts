@@ -35,10 +35,8 @@ export class TelegramService {
     const inviteCode = ctx.startPayload;
 
     if (inviteCode) {
-      // Registration only happens here. Joining is a deliberate action the
-      // member takes inside the mini app, not something /start does for them.
       const equb = await this.equbService.findByInviteCode(inviteCode);
-      await ctx.reply(
+      const sent = await ctx.reply(
         `Welcome to Sebsabi | ሰብሳቢ! 🎉\nYou were invited to "${equb.name}". Open the app to join.`,
         miniAppUrl
           ? Markup.inlineKeyboard([
@@ -49,15 +47,26 @@ export class TelegramService {
             ])
           : undefined,
       );
+      await this.pinSilently(ctx, sent.message_id);
       return;
     }
 
-    await ctx.reply(
+    const sent = await ctx.reply(
       `Welcome to Sebsabi | ሰብሳቢ! 🎉\nI am ready to help manage your Equb.`,
       miniAppUrl
         ? Markup.inlineKeyboard([Markup.button.webApp('Open App', miniAppUrl)])
         : undefined,
     );
+    await this.pinSilently(ctx, sent.message_id);
+  }
+
+  
+  private async pinSilently(ctx: Context, messageId: number): Promise<void> {
+    try {
+      await ctx.pinChatMessage(messageId, { disable_notification: true });
+    } catch {
+      // Best-effort; e.g. nothing to do if pinning isn't permitted here.
+    }
   }
 
   @Command('myinfo')

@@ -1,6 +1,8 @@
 import { BadRequestException, Injectable } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
+import { InjectBot } from 'nestjs-telegraf';
+import { Markup, Telegraf } from 'telegraf';
 import { Repository } from 'typeorm';
 import { EqubService } from '../equb/equb.service';
 import { EqubMember } from '../equb/entities/equb-member.entity';
@@ -25,27 +27,42 @@ export class LotteryService {
     private readonly notificationsService: NotificationsService,
     private readonly lotteryGateway: LotteryGateway,
     private readonly configService: ConfigService,
+    @InjectBot() private readonly bot: Telegraf,
   ) {}
 
-  // Admin-triggered: tells every member the live draw is starting, with a
-  // link straight into this equb's lottery page.
+
   async announce(equbId: string): Promise<{ notifiedCount: number }> {
     const equb = await this.equbService.findOne(equbId);
     const members = await this.equbMemberRepository.find({
       where: { equbId },
+      relations: ['user'],
     });
     const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
-    const link = miniAppUrl ? ` ${miniAppUrl}/Equb/${equbId}/lottery` : '';
+    const link = `${miniAppUrl}/Equb/${equbId}/lottery`;
 
     await Promise.all(
-      members.map((m) =>
-        this.notificationsService.create({
+      members.map(async (m) => {
+        await this.notificationsService.create({
           userId: m.userId,
           title: 'Live Lottery Starting',
-          description: `The live draw for ${equb.name} is starting now — join in!${link}`,
+          description: `The live draw for ${equb.name} is starting now — join in!`,
           type: NotificationType.INFO,
-        }),
-      ),
+        });
+
+        if (miniAppUrl && m.user?.telegramId) {
+          try {
+            await this.bot.telegram.sendMessage(
+              m.user.telegramId,
+              `🔴 Live lottery for ${equb.name} is starting now!`,
+              Markup.inlineKeyboard([
+                Markup.button.webApp('View Live', link),
+              ]),
+            );
+          } catch {
+            // Best-effort; user may have blocked the bot.
+          }
+        }
+      }),
     );
 
     return { notifiedCount: members.length };
@@ -148,16 +165,32 @@ export class LotteryService {
     const schedule = finalMembers
       .map((m) => `Month ${m.order}: ${m.user.fullName}`)
       .join('\n');
+    const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
+    const link = `${miniAppUrl}/Equb/${equbId}/lottery`;
 
     await Promise.all(
-      finalMembers.map((m) =>
-        this.notificationsService.create({
+      finalMembers.map(async (m) => {
+        await this.notificationsService.create({
           userId: m.userId,
           title: 'Lottery Complete',
           description: `The draw for ${equbName} is complete!\n${schedule}`,
           type: NotificationType.SUCCESS,
-        }),
-      ),
+        });
+
+        if (miniAppUrl && m.user?.telegramId) {
+          try {
+            await this.bot.telegram.sendMessage(
+              m.user.telegramId,
+              'Tap below to view the full schedule in the app 👇',
+              Markup.inlineKeyboard([
+                Markup.button.webApp('View Results', link),
+              ]),
+            );
+          } catch {
+            // Best-effort; user may have blocked the bot.
+          }
+        }
+      }),
     );
 
     this.lotteryGateway.broadcastComplete(

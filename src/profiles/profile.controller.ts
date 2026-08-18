@@ -1,7 +1,8 @@
-import { Controller, Get } from '@nestjs/common';
+import { Body, Controller, Get, Patch } from '@nestjs/common';
 import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthUser } from '../auth/telegram-auth.guard';
+import { UpdateProfileDto } from './dto/update-profile.dto';
 import { ProfileService } from './profile.service';
 
 @ApiTags('profile')
@@ -16,5 +17,11 @@ export class ProfileController {
   @Get()
   getProfile(@CurrentUser() user: AuthUser) {
     return this.profileService.getProfile(user.id);
+  }
+
+  @ApiOperation({ summary: "Edit the current user's profile" })
+  @Patch()
+  updateProfile(@Body() dto: UpdateProfileDto, @CurrentUser() user: AuthUser) {
+    return this.profileService.updateProfile(user.id, dto);
   }
 }

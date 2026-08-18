@@ -38,6 +38,14 @@ export class UsersService {
     return this.usersRepository.findOne({ where: { id } });
   }
 
+  async update(
+    id: string,
+    data: { fullName?: string; phone?: string },
+  ): Promise<User> {
+    await this.usersRepository.update(id, data);
+    return this.usersRepository.findOneOrFail({ where: { id } });
+  }
+
   // Public-safe roster: excludes phone/telegramId, which are personal
   // contact details other members have no reason to see.
   async findAll(): Promise<
