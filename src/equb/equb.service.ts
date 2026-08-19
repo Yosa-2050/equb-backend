@@ -12,11 +12,14 @@ import { In, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
 import { Payment } from '../payments/entities/payment.entity';
 import { AdminUpdateMemberDto } from './dto/admin-update-member.dto';
+import { CreateCollabGroupDto } from './dto/create-collab-group.dto';
 import { CreateEqubDto } from './dto/create-equb.dto';
 import { NotifyMembersDto } from './dto/notify-members.dto';
 import { UpdateEqubDto } from './dto/update-equb.dto';
 import { UpdateMyMembershipDto } from './dto/update-my-membership.dto';
-import { EqubMember, EqubMemberRole } from './entities/equb-member.entity';
+import { groupLabel } from './collab-group.util';
+import { CollabGroup } from './entities/collab-group.entity';
+import { CollabRole, EqubMember, EqubMemberRole } from './entities/equb-member.entity';
 import { Equb, EqubFrequency, EqubStatus } from './entities/equb.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
@@ -51,6 +54,8 @@ export class EqubService {
     private readonly paymentRepository: Repository<Payment>,
     @InjectRepository(User)
     private readonly userRepository: Repository<User>,
+    @InjectRepository(CollabGroup)
+    private readonly collabGroupRepository: Repository<CollabGroup>,
     private readonly notificationsService: NotificationsService,
     @InjectBot() private readonly bot: Telegraf,
   ) {}
@@ -137,6 +142,8 @@ export class EqubService {
         contributionAmount: m.contributionAmount
           ? toNumber(m.contributionAmount)
           : null,
+        collabGroupId: m.collabGroupId,
+        collabRole: m.collabRole,
         account: {
           provider: m.accountProvider,
           number: m.accountNumber,
@@ -146,6 +153,21 @@ export class EqubService {
     const adminMember = memberships.find(
       (m) => m.role === EqubMemberRole.ADMIN,
     );
+
+    const groupsById = new Map<string, EqubMember[]>();
+    for (const m of memberships) {
+      if (!m.collabGroupId || !m.user) continue;
+      const list = groupsById.get(m.collabGroupId) ?? [];
+      list.push(m);
+      groupsById.set(m.collabGroupId, list);
+    }
+    const collabGroups = [...groupsById.entries()].map(([groupId, gms]) => ({
+      id: groupId,
+      label: groupLabel(gms),
+      leaderMemberId:
+        gms.find((g) => g.collabRole === CollabRole.LEADER)?.id ?? gms[0].id,
+      memberIds: gms.map((g) => g.id),
+    }));
     return {
       id: equb.id,
       name: equb.name,
@@ -176,6 +198,7 @@ export class EqubService {
       membersCount: memberRows.length,
       isFull: equb.maxMembers != null && memberRows.length >= equb.maxMembers,
       members: memberRows,
+      collabGroups,
     };
   }
 
@@ -357,6 +380,87 @@ export class EqubService {
       ),
     );
     return { notifiedCount: members.length };
+  }
+
+
+  async createCollabGroup(
+    equbId: string,
+    actorId: string,
+    dto: CreateCollabGroupDto,
+  ): Promise<CollabGroup> {
+    await this.assertAdmin(equbId, actorId);
+    const equb = await this.findOne(equbId);
+
+    const memberIds = dto.members.map((m) => m.memberId);
+    if (new Set(memberIds).size !== memberIds.length) {
+      throw new BadRequestException('Duplicate members in group');
+    }
+    if (!memberIds.includes(dto.leaderMemberId)) {
+      throw new BadRequestException('Leader must be one of the group members');
+    }
+
+    const members = await this.equbMemberRepository.find({
+      where: { id: In(memberIds), equbId },
+    });
+    if (members.length !== memberIds.length) {
+      throw new NotFoundException('One or more members not found in this equb');
+    }
+    if (members.some((m) => m.collabGroupId)) {
+      throw new BadRequestException(
+        'One or more members already belong to a collab group',
+      );
+    }
+    if (members.some((m) => m.order !== null)) {
+      throw new BadRequestException(
+        'Cannot group members who already have a drawn period',
+      );
+    }
+
+    const sum = dto.members.reduce((s, m) => s + m.contributionAmount, 0);
+    const target = toNumber(equb.monthlyAmount);
+    if (Math.abs(sum - target) > 0.01) {
+      throw new BadRequestException(
+        `Contributions must sum to exactly ${target} ETB (got ${sum})`,
+      );
+    }
+
+    const group = await this.collabGroupRepository.save(
+      this.collabGroupRepository.create({ equbId, name: dto.name ?? null }),
+    );
+
+    for (const input of dto.members) {
+      await this.equbMemberRepository.update(input.memberId, {
+        collabGroupId: group.id,
+        collabRole:
+          input.memberId === dto.leaderMemberId
+            ? CollabRole.LEADER
+            : CollabRole.MEMBER,
+        contributionAmount: input.contributionAmount,
+      });
+    }
+
+    return group;
+  }
+
+  async dissolveCollabGroup(
+    equbId: string,
+    actorId: string,
+    groupId: string,
+  ): Promise<{ success: boolean }> {
+    await this.assertAdmin(equbId, actorId);
+    const group = await this.collabGroupRepository.findOne({
+      where: { id: groupId, equbId },
+    });
+    if (!group) {
+      throw new NotFoundException('Collab group not found');
+    }
+
+    await this.equbMemberRepository.update(
+      { collabGroupId: groupId },
+      { collabGroupId: null, collabRole: null, contributionAmount: null },
+    );
+    await this.collabGroupRepository.delete(groupId);
+    return { success: true };
   }
 
   async removeMember(

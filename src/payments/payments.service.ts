@@ -7,6 +7,7 @@ import {
 import { InjectRepository } from '@nestjs/typeorm';
 import { In, Repository } from 'typeorm';
 import { EqubService } from '../equb/equb.service';
+import { resolveRound } from '../equb/collab-group.util';
 import { EqubMember } from '../equb/entities/equb-member.entity';
 import { Equb, EqubStatus } from '../equb/entities/equb.entity';
 import { periodLabel } from '../common/period-label';
@@ -46,10 +47,9 @@ export class PaymentsService {
       relations: ['user'],
     });
 
-    const recipient =
-      memberships.find((m) => m.order !== null && m.order === month) ?? null;
-    const payerMembers = memberships.filter(
-      (m) => m.userId !== recipient?.userId,
+    const { recipient, payerMembers, groupMembers } = resolveRound(
+      memberships,
+      month,
     );
 
     // Ensure a payment row exists for every member who owes this month.
@@ -91,6 +91,36 @@ export class PaymentsService {
 
     const paidRows = rows.filter((r) => r.status === PaymentStatus.PAID);
 
+  
+    let payoutSplit: {
+      totalPot: number;
+      leaderMemberId: string;
+      splits: {
+        memberId: string;
+        fullName: string;
+        contributionAmount: number;
+        share: number;
+      }[];
+    } | null = null;
+    if (groupMembers && groupMembers.some((m) => m.userId === actorId)) {
+      const totalPot = defaultAmount * payerMembers.length;
+      payoutSplit = {
+        totalPot,
+        leaderMemberId: recipient!.userId,
+        splits: groupMembers.map((m) => {
+          const contribution = toNumber(m.contributionAmount ?? 0);
+          const share =
+            defaultAmount > 0 ? (contribution / defaultAmount) * totalPot : 0;
+          return {
+            memberId: m.userId,
+            fullName: m.user.fullName,
+            contributionAmount: contribution,
+            share,
+          };
+        }),
+      };
+    }
+
     return {
       equbId,
       month,
@@ -101,12 +131,14 @@ export class PaymentsService {
             memberId: recipient.userId,
             fullName: recipient.user.fullName,
             telegramUsername: recipient.user.telegramUsername,
+            isGroup: !!groupMembers,
             account: {
               provider: recipient.accountProvider,
               number: recipient.accountNumber,
             },
           }
         : null,
+      payoutSplit,
       collected: paidRows.reduce((sum, r) => sum + r.amount, 0),
       totalMembers: payerMembers.length,
       paidCount: paidRows.length,
@@ -127,9 +159,10 @@ export class PaymentsService {
     }
 
     const month = equb.currentRound;
-    const recipient = await this.equbMemberRepository.findOne({
-      where: { equbId, order: month },
+    const memberships = await this.equbMemberRepository.find({
+      where: { equbId },
     });
+    const { recipient } = resolveRound(memberships, month);
     const defaultAmount = this.memberAmount(equb, member);
 
     let payment = await this.paymentRepository.findOne({
@@ -191,10 +224,7 @@ export class PaymentsService {
     const memberships = await this.equbMemberRepository.find({
       where: { equbId },
     });
-    const recipient = memberships.find((m) => m.order === month) ?? null;
-    const payerMembers = memberships.filter(
-      (m) => m.userId !== recipient?.userId,
-    );
+    const { payerMembers } = resolveRound(memberships, month);
     if (payerMembers.length === 0) return false;
 
     const payments = await this.paymentRepository.find({
@@ -274,11 +304,7 @@ export class PaymentsService {
       where: { equbId },
       relations: ['user'],
     });
-    const recipient =
-      memberships.find((m) => m.order !== null && m.order === month) ?? null;
-    const payerMembers = memberships.filter(
-      (m) => m.userId !== recipient?.userId,
-    );
+    const { recipient, payerMembers } = resolveRound(memberships, month);
 
     const payments = await this.paymentRepository.find({ where: { month } });
     const unpaid = payerMembers.filter((member) => {
@@ -314,10 +340,7 @@ export class PaymentsService {
     const memberships = await this.equbMemberRepository.find({
       where: { equbId },
     });
-    const recipient = memberships.find((m) => m.order === month) ?? null;
-    const payerMembers = memberships.filter(
-      (m) => m.userId !== recipient?.userId,
-    );
+    const { recipient, payerMembers } = resolveRound(memberships, month);
 
     const payments = await this.paymentRepository.find({ where: { month } });
     for (const member of payerMembers) {

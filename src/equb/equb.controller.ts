@@ -11,6 +11,7 @@ import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthUser } from '../auth/telegram-auth.guard';
 import { AdminUpdateMemberDto } from './dto/admin-update-member.dto';
+import { CreateCollabGroupDto } from './dto/create-collab-group.dto';
 import { CreateEqubDto } from './dto/create-equb.dto';
 import { NotifyMembersDto } from './dto/notify-members.dto';
 import { UpdateEqubDto } from './dto/update-equb.dto';
@@ -133,6 +134,30 @@ export class EqubController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.equbService.removeMember(id, memberId, user.id);
+  }
+
+  @ApiOperation({
+    summary: 'Form a collab group (admin only)',
+    description:
+      'Teams up 2+ members to share one lottery slot. Their contributions must sum exactly to one monthly share.',
+  })
+  @Post(':id/collab-groups')
+  createCollabGroup(
+    @Param('id') id: string,
+    @Body() dto: CreateCollabGroupDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.equbService.createCollabGroup(id, user.id, dto);
+  }
+
+  @ApiOperation({ summary: 'Dissolve a collab group (admin only)' })
+  @Delete(':id/collab-groups/:groupId')
+  dissolveCollabGroup(
+    @Param('id') id: string,
+    @Param('groupId') groupId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.equbService.dissolveCollabGroup(id, user.id, groupId);
   }
 
   @ApiOperation({
