@@ -137,6 +137,7 @@ export class EqubService {
         number: index + 1,
         fullName: m.user.fullName,
         telegramUsername: m.user.telegramUsername,
+        phone: m.user.phone,
         role: m.role,
         order: m.order,
         contributionAmount: m.contributionAmount
