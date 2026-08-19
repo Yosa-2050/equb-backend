@@ -20,6 +20,11 @@ export enum EqubMemberRole {
   MEMBER = 'member',
 }
 
+export enum CollabRole {
+  LEADER = 'leader',
+  MEMBER = 'member',
+}
+
 @Entity('equb_members')
 @Unique(['equb', 'user'])
 export class EqubMember {
@@ -60,15 +65,20 @@ export class EqubMember {
   @Column({ nullable: true })
   accountNumber!: string;
 
-  // Name on the bank/mobile-money account, which may differ from the
-  // member's Telegram display name.
+  
   @Column({ nullable: true })
   accountHolderName!: string;
 
-  // Per-member override of equb.monthlyAmount. Null means "use the equb's
-  // default rate".
+
   @Column('decimal', { precision: 12, scale: 2, nullable: true })
   contributionAmount!: number | null;
+
+  // Collab group membership: members sharing one lottery slot & payout.
+  @Column({ type: 'uuid', nullable: true })
+  collabGroupId!: string | null;
+
+  @Column({ type: 'enum', enum: CollabRole, nullable: true })
+  collabRole!: CollabRole | null;
 
   @Column({
     type: 'enum',

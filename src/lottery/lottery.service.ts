@@ -5,7 +5,9 @@ import { InjectBot } from 'nestjs-telegraf';
 import { Markup, Telegraf } from 'telegraf';
 import { Repository } from 'typeorm';
 import { EqubService } from '../equb/equb.service';
-import { EqubMember } from '../equb/entities/equb-member.entity';
+import { groupLabel } from '../equb/collab-group.util';
+import { CollabRole, EqubMember } from '../equb/entities/equb-member.entity';
+import { periodLabel } from '../common/period-label';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { LotteryGateway } from './lottery.gateway';
@@ -16,6 +18,44 @@ export interface DrawResultDto {
   fullName: string;
   telegramUsername: string;
   month: number | null;
+  isGroup?: boolean;
+  groupMembers?: { memberId: string; fullName: string }[];
+}
+
+
+function buildUnits(members: EqubMember[]): EqubMember[][] {
+  const seen = new Set<string>();
+  const units: EqubMember[][] = [];
+  for (const m of members) {
+    if (m.collabGroupId) {
+      if (seen.has(m.collabGroupId)) continue;
+      seen.add(m.collabGroupId);
+      units.push(members.filter((x) => x.collabGroupId === m.collabGroupId));
+    } else {
+      units.push([m]);
+    }
+  }
+  return units;
+}
+
+function unitLeader(unit: EqubMember[]): EqubMember {
+  return unit.find((m) => m.collabRole === CollabRole.LEADER) ?? unit[0];
+}
+
+function unitToResult(unit: EqubMember[], number: number): DrawResultDto {
+  const leader = unitLeader(unit);
+  const isGroup = unit.length > 1;
+  return {
+    memberId: leader.userId,
+    number,
+    fullName: isGroup ? groupLabel(unit) : leader.user.fullName,
+    telegramUsername: leader.user.telegramUsername,
+    month: leader.order,
+    isGroup,
+    groupMembers: isGroup
+      ? unit.map((m) => ({ memberId: m.userId, fullName: m.user.fullName }))
+      : undefined,
+  };
 }
 
 @Injectable()
@@ -79,15 +119,10 @@ export class LotteryService {
       relations: ['user'],
       order: { order: 'ASC' },
     });
-    const results: DrawResultDto[] = members
-      .filter((m) => m.user)
-      .map((m, index) => ({
-        memberId: m.userId,
-        number: index + 1,
-        fullName: m.user.fullName,
-        telegramUsername: m.user.telegramUsername,
-        month: m.order,
-      }));
+    const units = buildUnits(members.filter((m) => m.user));
+    const results: DrawResultDto[] = units.map((unit, index) =>
+      unitToResult(unit, index + 1),
+    );
     const drawn = results.filter((r) => r.month !== null).length;
     return {
       total: results.length,
@@ -97,8 +132,6 @@ export class LotteryService {
     };
   }
 
-  // Spins once: assigns ONE random undrawn member the next free month (1..N).
-  // Matches the frontend's single-spin wheel.
   async spin(equbId: string): Promise<DrawResultDto> {
     const members = await this.equbMemberRepository.find({
       where: { equbId },
@@ -109,8 +142,9 @@ export class LotteryService {
       throw new BadRequestException('This equb has no members to draw');
     }
 
-    const undrawn = members.filter((m) => m.order === null);
-    if (undrawn.length === 0) {
+    const units = buildUnits(members);
+    const undrawnUnits = units.filter((u) => u[0].order === null);
+    if (undrawnUnits.length === 0) {
       throw new BadRequestException('All members already have an equb month');
     }
 
@@ -122,31 +156,40 @@ export class LotteryService {
       nextMonth += 1;
     }
 
-    const winner = undrawn[Math.floor(Math.random() * undrawn.length)];
-    winner.order = nextMonth;
-    winner.hasWon = true;
-    const saved = await this.equbMemberRepository.save(winner);
+    const winnerUnit = undrawnUnits[Math.floor(Math.random() * undrawnUnits.length)];
+    for (const m of winnerUnit) {
+      m.order = nextMonth;
+      m.hasWon = true;
+    }
+    const saved = await this.equbMemberRepository.save(winnerUnit);
+    const leader = unitLeader(saved);
+    const isGroup = saved.length > 1;
 
     const equb = await this.equbService.findOne(equbId);
-    await this.notificationsService.create({
-      userId: saved.userId,
-      title: 'Lottery Winner Announced',
-      description: `You won month ${nextMonth} for ${equb.name}!`,
-      type: NotificationType.SUCCESS,
-    });
+    const label = periodLabel(equb.frequency);
+    await Promise.all(
+      saved.map((m) =>
+        this.notificationsService.create({
+          userId: m.userId,
+          title: 'Lottery Winner Announced',
+          description: isGroup
+            ? `Your group won ${label.toLowerCase()} ${nextMonth} for ${equb.name}! ${
+                m.id === leader.id
+                  ? "You're the group leader — you'll collect and split the payout."
+                  : `${leader.user.fullName} will collect and split it with you.`
+              }`
+            : `You won ${label.toLowerCase()} ${nextMonth} for ${equb.name}!`,
+          type: NotificationType.SUCCESS,
+        }),
+      ),
+    );
 
-    const result: DrawResultDto = {
-      memberId: saved.userId,
-      number: nextMonth, // month is the payout slot; frontend number = roster position
-      fullName: saved.user.fullName,
-      telegramUsername: saved.user.telegramUsername,
-      month: saved.order!,
-    };
+
+    const result = unitToResult(saved, nextMonth);
 
     this.lotteryGateway.broadcastSpin(equbId, result);
 
-    if (undrawn.length === 1) {
-      // This was the last undrawn member: the whole schedule is now final.
+    if (undrawnUnits.length === 1) {
       await this.notifyScheduleComplete(equbId, equb.name);
     }
 
@@ -157,13 +200,20 @@ export class LotteryService {
     equbId: string,
     equbName: string,
   ): Promise<void> {
+    const equb = await this.equbService.findOne(equbId);
+    const label = periodLabel(equb.frequency);
     const finalMembers = await this.equbMemberRepository.find({
       where: { equbId },
       relations: ['user'],
       order: { order: 'ASC' },
     });
-    const schedule = finalMembers
-      .map((m) => `Month ${m.order}: ${m.user.fullName}`)
+    const finalUnits = buildUnits(finalMembers.filter((m) => m.user));
+    const schedule = finalUnits
+      .map((unit) => {
+        const leader = unitLeader(unit);
+        const who = unit.length > 1 ? groupLabel(unit) : leader.user.fullName;
+        return `${label} ${leader.order}: ${who}`;
+      })
       .join('\n');
     const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
     const link = `${miniAppUrl}/Equb/${equbId}/lottery`;
@@ -195,15 +245,7 @@ export class LotteryService {
 
     this.lotteryGateway.broadcastComplete(
       equbId,
-      finalMembers
-        .filter((m) => m.user)
-        .map((m, index) => ({
-          memberId: m.userId,
-          number: index + 1,
-          fullName: m.user.fullName,
-          telegramUsername: m.user.telegramUsername,
-          month: m.order,
-        })),
+      finalUnits.map((unit, index) => unitToResult(unit, index + 1)),
     );
   }
 }

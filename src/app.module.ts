@@ -1,5 +1,6 @@
 import { Module } from '@nestjs/common';
 import { ConfigModule, ConfigService } from '@nestjs/config';
+import { ScheduleModule } from '@nestjs/schedule';
 import { TypeOrmModule } from '@nestjs/typeorm';
 import { TelegrafModule } from 'nestjs-telegraf'; // <-- Added this
 import { AppController } from './app.controller';
@@ -17,6 +18,7 @@ import { AuthModule } from './auth/auth.module';
   imports: [
     // 1. Load .env file globally
     ConfigModule.forRoot({ isGlobal: true }),
+    ScheduleModule.forRoot(),
 
     // 2. Connect Telegram Bot using the token from .env
     TelegrafModule.forRootAsync({
