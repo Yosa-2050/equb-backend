@@ -10,6 +10,7 @@ import { CollabRole, EqubMember } from '../equb/entities/equb-member.entity';
 import { periodLabel } from '../common/period-label';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
+import { TranslationService } from '../i18n/translation.service';
 import { LotteryGateway } from './lottery.gateway';
 
 export interface DrawResultDto {
@@ -67,6 +68,7 @@ export class LotteryService {
     private readonly notificationsService: NotificationsService,
     private readonly lotteryGateway: LotteryGateway,
     private readonly configService: ConfigService,
+    private readonly translationService: TranslationService,
     @InjectBot() private readonly bot: Telegraf,
   ) {}
 
@@ -93,9 +95,14 @@ export class LotteryService {
           try {
             await this.bot.telegram.sendMessage(
               m.user.telegramId,
-              `🔴 Live lottery for ${equb.name} is starting now!`,
+              this.translationService.t(m.user.language, 'lottery.announce', {
+                equbName: equb.name,
+              }),
               Markup.inlineKeyboard([
-                Markup.button.webApp('View Live', link),
+                Markup.button.webApp(
+                  this.translationService.t(m.user.language, 'button.viewLive'),
+                  link,
+                ),
               ]),
             );
           } catch {
@@ -166,22 +173,29 @@ export class LotteryService {
     const isGroup = saved.length > 1;
 
     const equb = await this.equbService.findOne(equbId);
-    const label = periodLabel(equb.frequency);
     await Promise.all(
-      saved.map((m) =>
-        this.notificationsService.create({
+      saved.map((m) => {
+        const period = this.translationService.periodWord(
+          m.user.language,
+          equb.frequency,
+        );
+        const key = !isGroup
+          ? 'lottery.won.solo'
+          : m.id === leader.id
+            ? 'lottery.won.leader'
+            : 'lottery.won.member';
+        return this.notificationsService.create({
           userId: m.userId,
-          title: 'Lottery Winner Announced',
-          description: isGroup
-            ? `Your group won ${label.toLowerCase()} ${nextMonth} for ${equb.name}! ${
-                m.id === leader.id
-                  ? "You're the group leader — you'll collect and split the payout."
-                  : `${leader.user.fullName} will collect and split it with you.`
-              }`
-            : `You won ${label.toLowerCase()} ${nextMonth} for ${equb.name}!`,
+          title: this.translationService.t(m.user.language, 'lottery.won.title'),
+          description: this.translationService.t(m.user.language, key, {
+            equbName: equb.name,
+            period,
+            round: nextMonth,
+            leaderName: leader.user.fullName,
+          }),
           type: NotificationType.SUCCESS,
-        }),
-      ),
+        });
+      }),
     );
 
 
@@ -222,7 +236,7 @@ export class LotteryService {
       finalMembers.map(async (m) => {
         await this.notificationsService.create({
           userId: m.userId,
-          title: 'Lottery Complete',
+          title: this.translationService.t(m.user.language, 'lottery.complete.title'),
           description: `The draw for ${equbName} is complete!\n${schedule}`,
           type: NotificationType.SUCCESS,
         });
@@ -231,9 +245,12 @@ export class LotteryService {
           try {
             await this.bot.telegram.sendMessage(
               m.user.telegramId,
-              'Tap below to view the full schedule in the app 👇',
+              this.translationService.t(m.user.language, 'lottery.complete'),
               Markup.inlineKeyboard([
-                Markup.button.webApp('View Results', link),
+                Markup.button.webApp(
+                  this.translationService.t(m.user.language, 'button.viewResults'),
+                  link,
+                ),
               ]),
             );
           } catch {

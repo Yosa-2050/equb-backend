@@ -11,7 +11,7 @@ import {
   Min,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
-import { EqubFrequency } from '../entities/equb.entity';
+import { EqubFrequency, PaymentCollector } from '../entities/equb.entity';
 
 export class CreateEqubDto {
   @ApiProperty({ example: 'Family Equb', description: 'Name of the equb' })
@@ -81,6 +81,15 @@ export class CreateEqubDto {
   @Max(30)
   @IsOptional()
   reminderDayOfMonth?: number;
+
+  @ApiPropertyOptional({
+    enum: PaymentCollector,
+    default: PaymentCollector.WINNER,
+    description: 'Who collects contributions and approves receipts each round',
+  })
+  @IsEnum(PaymentCollector)
+  @IsOptional()
+  collector?: PaymentCollector;
 
   @ApiPropertyOptional({ default: true })
   @IsBoolean()

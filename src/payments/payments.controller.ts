@@ -5,8 +5,11 @@ import {
   Param,
   ParseIntPipe,
   Post,
+  UploadedFile,
+  UseInterceptors,
 } from '@nestjs/common';
-import { ApiBearerAuth, ApiOperation, ApiTags } from '@nestjs/swagger';
+import { FileInterceptor } from '@nestjs/platform-express';
+import { ApiBearerAuth, ApiConsumes, ApiOperation, ApiTags } from '@nestjs/swagger';
 import { CurrentUser } from '../auth/current-user.decorator';
 import type { AuthUser } from '../auth/telegram-auth.guard';
 import { CreatePaymentDto } from './dto/create-payment.dto';
@@ -60,6 +63,30 @@ export class PaymentsController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.paymentsService.reject(paymentId, user.id, dto.reason);
+  }
+
+  @ApiOperation({
+    summary: 'Submit this month contribution with a receipt photo (member)',
+    description:
+      "Uploads the receipt image to Cloudinary and saves its URL on the member's payment for this month.",
+  })
+  @ApiConsumes('multipart/form-data')
+  @Post('payments/upload')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 5 * 1024 * 1024 } }),
+  )
+  uploadReceipt(
+    @Param('equbId') equbId: string,
+    @UploadedFile() file: Express.Multer.File,
+    @Body('amount') amount: string | undefined,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.paymentsService.submitWithReceipt(
+      equbId,
+      user.id,
+      file,
+      amount ? Number(amount) : undefined,
+    );
   }
 
   @ApiOperation({

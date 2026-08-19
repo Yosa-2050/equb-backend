@@ -1,5 +1,6 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsEnum, IsOptional, IsString } from 'class-validator';
 import { ApiPropertyOptional } from '@nestjs/swagger';
+import { UserLanguage } from '../../users/entities/user.entity';
 
 export class UpdateProfileDto {
   @ApiPropertyOptional({ description: 'Your display name' })
@@ -11,4 +12,9 @@ export class UpdateProfileDto {
   @IsString()
   @IsOptional()
   phone?: string;
+
+  @ApiPropertyOptional({ enum: UserLanguage })
+  @IsEnum(UserLanguage)
+  @IsOptional()
+  language?: UserLanguage;
 }
