@@ -14,7 +14,7 @@ export class CollabGroup {
   @Column()
   equbId!: string;
 
-  @Column({ nullable: true })
+  @Column({ type: 'varchar', nullable: true })
   name!: string | null;
 
   @CreateDateColumn()
