@@ -15,6 +15,12 @@ export enum EqubStatus {
   COMPLETED = 'completed',
 }
 
+export enum EqubFrequency {
+  DAILY = 'daily',
+  WEEKLY = 'weekly',
+  MONTHLY = 'monthly',
+}
+
 @Entity('equbs')
 export class Equb {
   @PrimaryGeneratedColumn('uuid')
@@ -54,6 +60,38 @@ export class Equb {
 
   @Column({ type: 'date', nullable: true })
   nextDrawDate!: string;
+
+  @Column({ type: 'int', nullable: true })
+  maxMembers!: number | null;
+
+  @Column({
+    type: 'enum',
+    enum: EqubFrequency,
+    default: EqubFrequency.MONTHLY,
+  })
+  frequency!: EqubFrequency;
+
+  // When the current period (day/week/month) started. The scheduler
+  // force-advances the round once now >= periodStartedAt + 1 period,
+  // regardless of who has paid.
+  @Column({ type: 'timestamptz', nullable: true })
+  periodStartedAt!: Date | null;
+
+  // Reminder schedule (Ethiopia local time, HH:mm, 24h).
+  @Column({ type: 'varchar', nullable: true })
+  reminderTime!: string | null;
+
+  // 0 (Sunday) .. 6 (Saturday). Only used when frequency = weekly.
+  @Column({ type: 'int', nullable: true })
+  reminderDayOfWeek!: number | null;
+
+  // Ethiopian calendar day-of-month (1-30). Only used when frequency = monthly.
+  @Column({ type: 'int', nullable: true })
+  reminderDayOfMonth!: number | null;
+
+  // Prevents the scheduler from sending the same automatic reminder twice.
+  @Column({ type: 'timestamptz', nullable: true })
+  lastReminderSentAt!: Date | null;
 
   @ManyToOne(() => User)
   @JoinColumn({ name: 'adminId' })

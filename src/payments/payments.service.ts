@@ -9,6 +9,7 @@ import { In, Repository } from 'typeorm';
 import { EqubService } from '../equb/equb.service';
 import { EqubMember } from '../equb/entities/equb-member.entity';
 import { Equb, EqubStatus } from '../equb/entities/equb.entity';
+import { periodLabel } from '../common/period-label';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { Payment, PaymentStatus } from './entities/payment.entity';
@@ -213,15 +214,16 @@ export class PaymentsService {
     const members = await this.equbMemberRepository.find({
       where: { equbId: equb.id },
     });
+    const label = periodLabel(equb.frequency);
     const isComplete = equb.status === EqubStatus.COMPLETED;
     await Promise.all(
       members.map((m) =>
         this.notificationsService.create({
           userId: m.userId,
-          title: isComplete ? 'Equb Complete' : 'Month Complete',
+          title: isComplete ? 'Equb Complete' : `${label} Complete`,
           description: isComplete
-            ? `${equb.name} has finished all ${equb.durationMonths} months. Thanks for participating!`
-            : `Month ${completedMonth} is fully collected for ${equb.name}. Round ${equb.currentRound} has started.`,
+            ? `${equb.name} has finished all ${equb.durationMonths} ${label.toLowerCase()}s. Thanks for participating!`
+            : `${label} ${completedMonth} has ended for ${equb.name}. ${label} ${equb.currentRound} has started.`,
           type: NotificationType.SUCCESS,
         }),
       ),
@@ -255,10 +257,16 @@ export class PaymentsService {
     return saved;
   }
 
-  // Admin-triggered: reminds every member who hasn't paid this month yet,
-  // telling them where to send the money (this month's recipient's account).
+  // Admin-triggered: reminds every member who hasn't paid this period yet,
+  // telling them where to send the money (this period's recipient's account).
   async remind(equbId: string, actorId: string): Promise<{ remindedCount: number }> {
     await this.equbService.assertAdmin(equbId, actorId);
+    return this.remindInternal(equbId);
+  }
+
+  // Core reminder logic, shared by the manual admin endpoint and the
+  // automatic scheduler (which has no "actor" to authorize).
+  async remindInternal(equbId: string): Promise<{ remindedCount: number }> {
     const equb = await this.equbService.findOne(equbId);
     const month = equb.currentRound;
 
@@ -275,7 +283,7 @@ export class PaymentsService {
     const payments = await this.paymentRepository.find({ where: { month } });
     const unpaid = payerMembers.filter((member) => {
       const payment = payments.find((p) => p.equbMemberId === member.id);
-      return !payment || payment.status !== PaymentStatus.PAID;
+      return !payment || payment.status === PaymentStatus.PENDING || payment.status === PaymentStatus.REJECTED;
     });
 
     const accountInfo = recipient
@@ -286,14 +294,54 @@ export class PaymentsService {
       unpaid.map((member) =>
         this.notificationsService.create({
           userId: member.userId,
-          title: 'Monthly Payment Reminder',
-          description: `Pay your ${this.memberAmount(equb, member)} ETB contribution for ${equb.name} (month ${month}) to: ${accountInfo}`,
+          title: 'Payment Reminder',
+          description: `Pay your ${this.memberAmount(equb, member)} ETB contribution for ${equb.name} (${periodLabel(equb.frequency).toLowerCase()} ${month}) to: ${accountInfo}`,
           type: NotificationType.WARNING,
         }),
       ),
     );
 
     return { remindedCount: unpaid.length };
+  }
+
+  // Time-driven: called by the scheduler once a period's deadline passes,
+  // regardless of who has paid. Flags stragglers LATE instead of blocking
+  // the group, then advances everyone to the next period.
+  async forceAdvancePeriod(equbId: string): Promise<void> {
+    const equb = await this.equbService.findOne(equbId);
+    const month = equb.currentRound;
+
+    const memberships = await this.equbMemberRepository.find({
+      where: { equbId },
+    });
+    const recipient = memberships.find((m) => m.order === month) ?? null;
+    const payerMembers = memberships.filter(
+      (m) => m.userId !== recipient?.userId,
+    );
+
+    const payments = await this.paymentRepository.find({ where: { month } });
+    for (const member of payerMembers) {
+      const existing = payments.find((p) => p.equbMemberId === member.id);
+      if (existing) {
+        if (existing.status !== PaymentStatus.PAID) {
+          existing.status = PaymentStatus.LATE;
+          await this.paymentRepository.save(existing);
+        }
+      } else {
+        await this.paymentRepository.save(
+          this.paymentRepository.create({
+            equbMemberId: member.id,
+            recipientId: recipient?.id ?? null,
+            month,
+            amount: this.memberAmount(equb, member),
+            status: PaymentStatus.LATE,
+          }),
+        );
+      }
+    }
+
+    const updated = await this.equbService.advanceRound(equbId);
+    await this.notifyRoundAdvanced(updated, month);
   }
 
   // Only the recipient of the month may approve/reject, and they may not

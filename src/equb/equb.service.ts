@@ -17,7 +17,7 @@ import { NotifyMembersDto } from './dto/notify-members.dto';
 import { UpdateEqubDto } from './dto/update-equb.dto';
 import { UpdateMyMembershipDto } from './dto/update-my-membership.dto';
 import { EqubMember, EqubMemberRole } from './entities/equb-member.entity';
-import { Equb, EqubStatus } from './entities/equb.entity';
+import { Equb, EqubFrequency, EqubStatus } from './entities/equb.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
 
@@ -29,11 +29,14 @@ export interface EqubSummary {
   monthlyAmount: number;
   totalAmount: number;
   durationMonths: number;
+  frequency: EqubFrequency;
+  maxMembers: number | null;
   inviteCode: string;
   status: EqubStatus;
   isPublic: boolean;
   admin: { id: string; fullName: string; telegramUsername: string };
   membersCount: number;
+  isFull: boolean;
   createdAt: Date;
 }
 
@@ -59,6 +62,12 @@ export class EqubService {
       durationMonths: dto.durationMonths,
       totalAmount: dto.totalAmount,
       totalPot: toNumber(dto.monthlyAmount) * dto.durationMonths,
+      frequency: dto.frequency ?? EqubFrequency.MONTHLY,
+      maxMembers: dto.maxMembers ?? null,
+      reminderTime: dto.reminderTime ?? null,
+      reminderDayOfWeek: dto.reminderDayOfWeek ?? null,
+      reminderDayOfMonth: dto.reminderDayOfMonth ?? null,
+      periodStartedAt: new Date(),
       isPublic: dto.isPublic ?? true,
       description: dto.description,
       inviteCode: this.generateInviteCode(),
@@ -144,12 +153,18 @@ export class EqubService {
       totalPot: toNumber(equb.totalPot),
       totalAmount: toNumber(equb.totalAmount),
       durationMonths: equb.durationMonths,
+      frequency: equb.frequency,
+      maxMembers: equb.maxMembers,
+      reminderTime: equb.reminderTime,
+      reminderDayOfWeek: equb.reminderDayOfWeek,
+      reminderDayOfMonth: equb.reminderDayOfMonth,
       inviteCode: equb.inviteCode,
       status: equb.status,
       isPublic: equb.isPublic,
       description: equb.description,
       currentRound: equb.currentRound,
       nextDrawDate: equb.nextDrawDate,
+      periodStartedAt: equb.periodStartedAt,
       createdAt: equb.createdAt,
       admin: {
         id: adminMember?.userId ?? equb.adminId,
@@ -159,6 +174,7 @@ export class EqubService {
       isAdmin: !!adminMember && adminMember.userId === actorId,
       isMember: memberships.some((m) => m.userId === actorId),
       membersCount: memberRows.length,
+      isFull: equb.maxMembers != null && memberRows.length >= equb.maxMembers,
       members: memberRows,
     };
   }
@@ -191,6 +207,21 @@ export class EqubService {
     if (dto.totalAmount !== undefined) {
       equb.totalAmount = dto.totalAmount;
     }
+    if (dto.frequency !== undefined) {
+      equb.frequency = dto.frequency;
+    }
+    if (dto.maxMembers !== undefined) {
+      equb.maxMembers = dto.maxMembers;
+    }
+    if (dto.reminderTime !== undefined) {
+      equb.reminderTime = dto.reminderTime;
+    }
+    if (dto.reminderDayOfWeek !== undefined) {
+      equb.reminderDayOfWeek = dto.reminderDayOfWeek;
+    }
+    if (dto.reminderDayOfMonth !== undefined) {
+      equb.reminderDayOfMonth = dto.reminderDayOfMonth;
+    }
     return this.equbRepository.save(equb);
   }
 
@@ -201,14 +232,17 @@ export class EqubService {
     return this.equbRepository.save(equb);
   }
 
-  // Called once a month's contributions are fully collected. Moves to the
-  // next month, or marks the equb completed if that was the last one.
+  // Moves to the next period (early if fully collected, or forced by the
+  // scheduler once the period's deadline passes), or marks the equb
+  // completed if that was the last one.
   async advanceRound(id: string): Promise<Equb> {
     const equb = await this.findOne(id);
     if (equb.currentRound >= equb.durationMonths) {
       equb.status = EqubStatus.COMPLETED;
     } else {
       equb.currentRound += 1;
+      equb.periodStartedAt = new Date();
+      equb.lastReminderSentAt = null;
     }
     return this.equbRepository.save(equb);
   }
@@ -357,6 +391,7 @@ export class EqubService {
         'This is a private equb. Ask the admin to add you.',
       );
     }
+    await this.assertNotFull(equb);
     const member = this.equbMemberRepository.create({
       equbId,
       userId,
@@ -377,6 +412,7 @@ export class EqubService {
     if (existing) {
       return existing;
     }
+    await this.assertNotFull(equb);
     const member = this.equbMemberRepository.create({
       equbId,
       userId,
@@ -439,6 +475,16 @@ export class EqubService {
     );
   }
 
+  private async assertNotFull(equb: Equb): Promise<void> {
+    if (equb.maxMembers == null) return;
+    const count = await this.equbMemberRepository.count({
+      where: { equbId: equb.id },
+    });
+    if (count >= equb.maxMembers) {
+      throw new BadRequestException('This equb is full');
+    }
+  }
+
   async getMembers(equbId: string): Promise<EqubMember[]> {
     return this.equbMemberRepository.find({
       where: { equbId },
@@ -458,12 +504,15 @@ export class EqubService {
   }
 
   private summary(equb: Equb): EqubSummary {
+    const membersCount = Number(equb.members?.length ?? 0);
     return {
       id: equb.id,
       name: equb.name,
       monthlyAmount: toNumber(equb.monthlyAmount),
       totalAmount: toNumber(equb.totalAmount),
       durationMonths: equb.durationMonths,
+      frequency: equb.frequency,
+      maxMembers: equb.maxMembers,
       inviteCode: equb.inviteCode,
       status: equb.status,
       isPublic: equb.isPublic,
@@ -472,7 +521,8 @@ export class EqubService {
         fullName: equb.admin?.fullName,
         telegramUsername: equb.admin?.telegramUsername,
       },
-      membersCount: Number(equb.members?.length ?? 0),
+      membersCount,
+      isFull: equb.maxMembers != null && membersCount >= equb.maxMembers,
       createdAt: equb.createdAt,
     };
   }

@@ -12,6 +12,8 @@ export enum PaymentStatus {
   PENDING = 'pending',
   PAID = 'paid',
   REJECTED = 'rejected',
+  // The period advanced (time-driven) before this payment was marked paid.
+  LATE = 'late',
 }
 
 @Entity('payments')

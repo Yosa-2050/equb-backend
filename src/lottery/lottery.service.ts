@@ -6,6 +6,7 @@ import { Markup, Telegraf } from 'telegraf';
 import { Repository } from 'typeorm';
 import { EqubService } from '../equb/equb.service';
 import { EqubMember } from '../equb/entities/equb-member.entity';
+import { periodLabel } from '../common/period-label';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { LotteryGateway } from './lottery.gateway';
@@ -128,10 +129,11 @@ export class LotteryService {
     const saved = await this.equbMemberRepository.save(winner);
 
     const equb = await this.equbService.findOne(equbId);
+    const label = periodLabel(equb.frequency);
     await this.notificationsService.create({
       userId: saved.userId,
       title: 'Lottery Winner Announced',
-      description: `You won month ${nextMonth} for ${equb.name}!`,
+      description: `You won ${label.toLowerCase()} ${nextMonth} for ${equb.name}!`,
       type: NotificationType.SUCCESS,
     });
 
@@ -157,13 +159,15 @@ export class LotteryService {
     equbId: string,
     equbName: string,
   ): Promise<void> {
+    const equb = await this.equbService.findOne(equbId);
+    const label = periodLabel(equb.frequency);
     const finalMembers = await this.equbMemberRepository.find({
       where: { equbId },
       relations: ['user'],
       order: { order: 'ASC' },
     });
     const schedule = finalMembers
-      .map((m) => `Month ${m.order}: ${m.user.fullName}`)
+      .map((m) => `${label} ${m.order}: ${m.user.fullName}`)
       .join('\n');
     const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
     const link = `${miniAppUrl}/Equb/${equbId}/lottery`;
