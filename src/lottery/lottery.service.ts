@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { InjectBot } from 'nestjs-telegraf';
@@ -6,12 +6,17 @@ import { Markup, Telegraf } from 'telegraf';
 import { Repository } from 'typeorm';
 import { EqubService } from '../equb/equb.service';
 import { groupLabel } from '../equb/collab-group.util';
-import { CollabRole, EqubMember } from '../equb/entities/equb-member.entity';
+import {
+  CollabRole,
+  EqubMember,
+  EqubMemberAssignmentSource,
+} from '../equb/entities/equb-member.entity';
 import { periodLabel } from '../common/period-label';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { TranslationService } from '../i18n/translation.service';
 import { LotteryGateway } from './lottery.gateway';
+import { AdminPickDto } from './dto/admin-pick.dto';
 
 export interface DrawResultDto {
   memberId: string;
@@ -19,6 +24,7 @@ export interface DrawResultDto {
   fullName: string;
   telegramUsername: string;
   month: number | null;
+  assignmentSource: EqubMemberAssignmentSource | null;
   isGroup?: boolean;
   groupMembers?: { memberId: string; fullName: string }[];
 }
@@ -47,14 +53,15 @@ function unitToResult(unit: EqubMember[], number: number): DrawResultDto {
   const leader = unitLeader(unit);
   const isGroup = unit.length > 1;
   return {
-    memberId: leader.userId,
+    memberId: leader.id,
     number,
     fullName: isGroup ? groupLabel(unit) : leader.user.fullName,
     telegramUsername: leader.user.telegramUsername,
     month: leader.order,
+    assignmentSource: leader.assignmentSource,
     isGroup,
     groupMembers: isGroup
-      ? unit.map((m) => ({ memberId: m.userId, fullName: m.user.fullName }))
+      ? unit.map((m) => ({ memberId: m.id, fullName: m.user.fullName }))
       : undefined,
   };
 }
@@ -167,6 +174,7 @@ export class LotteryService {
     for (const m of winnerUnit) {
       m.order = nextMonth;
       m.hasWon = true;
+      m.assignmentSource = EqubMemberAssignmentSource.LOTTERY;
     }
     const saved = await this.equbMemberRepository.save(winnerUnit);
     const leader = unitLeader(saved);
@@ -208,6 +216,69 @@ export class LotteryService {
     }
 
     return result;
+  }
+
+  async adminPick(
+    equbId: string,
+    actorId: string,
+    dto: AdminPickDto,
+  ): Promise<DrawResultDto> {
+    const equb = await this.equbService.findOne(equbId);
+    const members = await this.equbMemberRepository.find({
+      where: { equbId },
+      relations: ['user'],
+    });
+    if (members.some((m) => m.order !== null)) {
+      throw new BadRequestException(
+        "Admin's pick can only be set before the lottery draw starts",
+      );
+    }
+
+    const selected = members.find((m) => m.id === dto.memberId);
+    if (!selected) {
+      throw new NotFoundException('Member not found in this equb');
+    }
+
+    const unit = selected.collabGroupId
+      ? members.filter((m) => m.collabGroupId === selected.collabGroupId)
+      : [selected];
+
+    for (const m of unit) {
+      m.order = 1;
+      m.hasWon = true;
+      m.assignmentSource = EqubMemberAssignmentSource.ADMIN_PICK;
+    }
+
+    const saved = await this.equbMemberRepository.save(unit);
+    const result = unitToResult(saved, 1);
+    const adminName = equb.admin?.fullName ?? 'Admin';
+    const recipientName = result.fullName;
+    await this.broadcastToMembers(
+      equbId,
+      "Admin's Pick",
+      `Admin ${adminName} has assigned ${recipientName} to ${periodLabel(equb.frequency)} 1.`,
+      NotificationType.INFO,
+    );
+    return result;
+  }
+
+  private async broadcastToMembers(
+    equbId: string,
+    title: string,
+    description: string,
+    type: NotificationType,
+  ): Promise<void> {
+    const members = await this.equbMemberRepository.find({ where: { equbId } });
+    await Promise.all(
+      members.map((m) =>
+        this.notificationsService.create({
+          userId: m.userId,
+          title,
+          description,
+          type,
+        }),
+      ),
+    );
   }
 
   private async notifyScheduleComplete(

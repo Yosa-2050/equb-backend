@@ -13,7 +13,9 @@ import type { AuthUser } from '../auth/telegram-auth.guard';
 import { AdminUpdateMemberDto } from './dto/admin-update-member.dto';
 import { CreateCollabGroupDto } from './dto/create-collab-group.dto';
 import { CreateEqubDto } from './dto/create-equb.dto';
+import { CreateManualMemberDto } from './dto/create-manual-member.dto';
 import { NotifyMembersDto } from './dto/notify-members.dto';
+import { SwapMembersDto } from './dto/swap-members.dto';
 import { UpdateEqubDto } from './dto/update-equb.dto';
 import { UpdateMyMembershipDto } from './dto/update-my-membership.dto';
 import { EqubService } from './equb.service';
@@ -99,6 +101,20 @@ export class EqubController {
   }
 
   @ApiOperation({
+    summary: 'Manually add a member (admin only)',
+    description:
+      'Lets the admin add a member directly, including phone and payout account details.',
+  })
+  @Post(':id/members')
+  createManualMember(
+    @Param('id') id: string,
+    @Body() dto: CreateManualMemberDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.equbService.createManualMember(id, user.id, dto);
+  }
+
+  @ApiOperation({
     summary: 'Edit my own membership',
     description:
       'Lets the current member update their display name and payout account details for this equb.',
@@ -134,6 +150,20 @@ export class EqubController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.equbService.removeMember(id, memberId, user.id);
+  }
+
+  @ApiOperation({
+    summary: 'Swap two future member months (admin only)',
+    description:
+      'Swaps assigned future months for two members or collab groups. Current and past rounds cannot be swapped.',
+  })
+  @Post(':id/members/swap')
+  swapMemberMonths(
+    @Param('id') id: string,
+    @Body() dto: SwapMembersDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.equbService.swapMemberMonths(id, user.id, dto);
   }
 
   @ApiOperation({

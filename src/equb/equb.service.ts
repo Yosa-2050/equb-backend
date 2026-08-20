@@ -14,7 +14,9 @@ import { Payment } from '../payments/entities/payment.entity';
 import { AdminUpdateMemberDto } from './dto/admin-update-member.dto';
 import { CreateCollabGroupDto } from './dto/create-collab-group.dto';
 import { CreateEqubDto } from './dto/create-equb.dto';
+import { CreateManualMemberDto } from './dto/create-manual-member.dto';
 import { NotifyMembersDto } from './dto/notify-members.dto';
+import { SwapMembersDto } from './dto/swap-members.dto';
 import { UpdateEqubDto } from './dto/update-equb.dto';
 import { UpdateMyMembershipDto } from './dto/update-my-membership.dto';
 import { groupLabel } from './collab-group.util';
@@ -493,6 +495,134 @@ export class EqubService {
     return { success: true };
   }
 
+  async swapMemberMonths(
+    equbId: string,
+    actorId: string,
+    dto: SwapMembersDto,
+  ): Promise<{ success: boolean }> {
+    await this.assertAdmin(equbId, actorId);
+    const equb = await this.findOne(equbId);
+    const members = await this.equbMemberRepository.find({
+      where: { equbId },
+      relations: ['user'],
+    });
+    const memberA = members.find((m) => m.id === dto.memberAId);
+    const memberB = members.find((m) => m.id === dto.memberBId);
+    if (!memberA || !memberB) {
+      throw new NotFoundException('One or both members were not found');
+    }
+
+    const unitA = this.memberUnit(members, memberA);
+    const unitB = this.memberUnit(members, memberB);
+    if (unitA.some((m) => unitB.some((x) => x.id === m.id))) {
+      throw new BadRequestException('Choose two different members or groups');
+    }
+
+    const monthA = unitA[0].order;
+    const monthB = unitB[0].order;
+    if (monthA === null || monthB === null) {
+      throw new BadRequestException('Both members must already have assigned months');
+    }
+    if (monthA <= equb.currentRound || monthB <= equb.currentRound) {
+      throw new BadRequestException(
+        'Only future rounds can be swapped. Current and past rounds are locked.',
+      );
+    }
+
+    const sourceA = unitA[0].assignmentSource;
+    const sourceB = unitB[0].assignmentSource;
+    for (const member of unitA) {
+      member.order = monthB;
+      member.assignmentSource = sourceB;
+    }
+    for (const member of unitB) {
+      member.order = monthA;
+      member.assignmentSource = sourceA;
+    }
+    await this.equbMemberRepository.save([...unitA, ...unitB]);
+
+    const nameA = this.unitLabel(unitA);
+    const nameB = this.unitLabel(unitB);
+    const label = this.frequencyLabel(equb.frequency);
+    await this.broadcastToEqubMembers(
+      equbId,
+      'Months Swapped',
+      `${nameA} and ${nameB} have swapped months. ${nameA} is now ${label} ${monthB}, ${nameB} is now ${label} ${monthA}.`,
+      NotificationType.INFO,
+    );
+
+    return { success: true };
+  }
+
+  async createManualMember(
+    equbId: string,
+    actorId: string,
+    dto: CreateManualMemberDto,
+  ): Promise<EqubMember> {
+    await this.assertAdmin(equbId, actorId);
+    const equb = await this.findOne(equbId);
+    await this.assertNotFull(equb);
+
+    const fullName = dto.fullName.trim();
+    const telegramUsername = dto.telegramUsername
+      ?.trim()
+      .replace(/^@/, '')
+      .toLowerCase();
+    const phone = dto.phone?.trim();
+
+    let user: User | null = null;
+    if (telegramUsername) {
+      user = await this.userRepository.findOne({
+        where: { telegramUsername },
+      });
+    }
+    if (!user && phone) {
+      user = await this.userRepository.findOne({ where: { phone } });
+    }
+
+    if (!user) {
+      user = await this.userRepository.save(
+        this.userRepository.create({
+          telegramId: await this.generateManualTelegramId(),
+          fullName,
+          telegramUsername,
+          phone,
+        }),
+      );
+    } else {
+      await this.userRepository.update(user.id, {
+        fullName,
+        ...(telegramUsername ? { telegramUsername } : {}),
+        ...(phone ? { phone } : {}),
+      });
+    }
+
+    const existing = await this.equbMemberRepository.findOne({
+      where: { equbId, userId: user.id },
+    });
+    if (existing) {
+      throw new BadRequestException('This user is already a member');
+    }
+
+    const member = await this.equbMemberRepository.save(
+      this.equbMemberRepository.create({
+        equbId,
+        userId: user.id,
+        role: EqubMemberRole.MEMBER,
+        accountProvider: dto.accountProvider?.trim() || undefined,
+        accountNumber: dto.accountNumber?.trim() || undefined,
+        accountHolderName: dto.accountHolderName?.trim() || undefined,
+        contributionAmount: dto.contributionAmount ?? null,
+      }),
+    );
+
+    await this.notifyOnManualMemberAdded(equb, fullName, user.id);
+    return this.equbMemberRepository.findOneOrFail({
+      where: { id: member.id },
+      relations: ['user'],
+    });
+  }
+
   async join(equbId: string, userId: string): Promise<EqubMember> {
     const equb = await this.findOne(equbId);
     const existing = await this.equbMemberRepository.findOne({
@@ -588,6 +718,74 @@ export class EqubService {
         }),
       ),
     );
+  }
+
+  private async notifyOnManualMemberAdded(
+    equb: Equb,
+    memberName: string,
+    newMemberUserId: string,
+  ): Promise<void> {
+    const members = await this.equbMemberRepository.find({
+      where: { equbId: equb.id },
+    });
+    const others = members.filter((m) => m.userId !== newMemberUserId);
+    await Promise.all(
+      others.map((m) =>
+        this.notificationsService.create({
+          userId: m.userId,
+          title: 'New Member Added',
+          description: `${memberName} was added to ${equb.name}.`,
+          type: NotificationType.INFO,
+        }),
+      ),
+    );
+  }
+
+  private memberUnit(
+    members: EqubMember[],
+    member: EqubMember,
+  ): EqubMember[] {
+    return member.collabGroupId
+      ? members.filter((m) => m.collabGroupId === member.collabGroupId)
+      : [member];
+  }
+
+  private unitLabel(unit: EqubMember[]): string {
+    return unit.length > 1 ? groupLabel(unit) : unit[0].user.fullName;
+  }
+
+  private frequencyLabel(frequency: EqubFrequency): string {
+    return frequency.charAt(0).toUpperCase() + frequency.slice(1);
+  }
+
+  private async broadcastToEqubMembers(
+    equbId: string,
+    title: string,
+    description: string,
+    type: NotificationType,
+  ): Promise<void> {
+    const members = await this.equbMemberRepository.find({ where: { equbId } });
+    await Promise.all(
+      members.map((m) =>
+        this.notificationsService.create({
+          userId: m.userId,
+          title,
+          description,
+          type,
+        }),
+      ),
+    );
+  }
+
+  private async generateManualTelegramId(): Promise<string> {
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      const id = `-${Date.now()}${Math.floor(Math.random() * 1000)}`;
+      const existing = await this.userRepository.findOne({
+        where: { telegramId: id },
+      });
+      if (!existing) return id;
+    }
+    return `-${parseInt(randomBytes(6).toString('hex'), 16)}`;
   }
 
   private async assertNotFull(equb: Equb): Promise<void> {
