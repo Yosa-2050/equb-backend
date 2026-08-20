@@ -1,15 +1,25 @@
-import { Injectable, InternalServerErrorException } from '@nestjs/common';
+import { Injectable, InternalServerErrorException, Logger } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { v2 as cloudinary, UploadApiErrorResponse, UploadApiResponse } from 'cloudinary';
 import { Readable } from 'stream';
 
 @Injectable()
 export class CloudinaryService {
+  private readonly logger = new Logger(CloudinaryService.name);
+
   constructor(private readonly configService: ConfigService) {
+    const cloudName = this.configService.get<string>('CLOUDINARY_CLOUD_NAME');
+    const apiKey = this.configService.get<string>('CLOUDINARY_API_KEY');
+    const apiSecret = this.configService.get<string>('CLOUDINARY_API_SECRET');
+    if (!cloudName || !apiKey || !apiSecret) {
+      this.logger.warn(
+        'Cloudinary is not fully configured (missing CLOUDINARY_CLOUD_NAME/API_KEY/API_SECRET) — receipt uploads will fail.',
+      );
+    }
     cloudinary.config({
-      cloud_name: this.configService.get<string>('CLOUDINARY_CLOUD_NAME'),
-      api_key: this.configService.get<string>('CLOUDINARY_API_KEY'),
-      api_secret: this.configService.get<string>('CLOUDINARY_API_SECRET'),
+      cloud_name: cloudName,
+      api_key: apiKey,
+      api_secret: apiSecret,
     });
   }
 
@@ -19,11 +29,9 @@ export class CloudinaryService {
         { folder: 'equb-receipts', resource_type: 'image' },
         (error: UploadApiErrorResponse | undefined, result?: UploadApiResponse) => {
           if (error || !result) {
-            reject(
-              error instanceof Error
-                ? error
-                : new InternalServerErrorException('Cloudinary upload failed'),
-            );
+            const message = error?.message ?? 'Unknown Cloudinary error';
+            this.logger.error(`Cloudinary upload failed: ${message}`, error?.name);
+            reject(new InternalServerErrorException(`Cloudinary upload failed: ${message}`));
             return;
           }
           resolve(result.secure_url);
