@@ -25,6 +25,11 @@ export enum CollabRole {
   MEMBER = 'member',
 }
 
+export enum EqubMemberAssignmentSource {
+  ADMIN_PICK = 'admin_pick',
+  LOTTERY = 'lottery',
+}
+
 @Entity('equb_members')
 @Unique(['equb', 'user'])
 export class EqubMember {
@@ -55,6 +60,13 @@ export class EqubMember {
   // Payout order/month assigned when the lottery is run (1..N)
   @Column({ type: 'int', nullable: true })
   order!: number | null;
+
+  @Column({
+    type: 'enum',
+    enum: EqubMemberAssignmentSource,
+    nullable: true,
+  })
+  assignmentSource!: EqubMemberAssignmentSource | null;
 
   @Column({ default: false })
   hasWon!: boolean;
