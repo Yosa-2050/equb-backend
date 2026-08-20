@@ -5,6 +5,11 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 
+export enum UserLanguage {
+  EN = 'en',
+  AM = 'am',
+}
+
 @Entity('users')
 export class User {
   @PrimaryGeneratedColumn('uuid')
@@ -24,6 +29,9 @@ export class User {
 
   @Column({ nullable: true })
   avatarUrl!: string;
+
+  @Column({ type: 'enum', enum: UserLanguage, default: UserLanguage.AM })
+  language!: UserLanguage;
 
   @CreateDateColumn()
   createdAt!: Date;

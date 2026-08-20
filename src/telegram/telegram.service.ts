@@ -4,6 +4,8 @@ import { Action, Command, Start, Update } from 'nestjs-telegraf';
 import { Context, Markup, Scenes } from 'telegraf';
 import { EqubService } from '../equb/equb.service';
 import { UsersService } from '../users/users.service';
+import { UserLanguage } from '../users/entities/user.entity';
+import { TranslationService } from '../i18n/translation.service';
 
 type SceneCapableContext = Context & Scenes.SceneContext;
 
@@ -16,6 +18,7 @@ export class TelegramService {
     private readonly usersService: UsersService,
     private readonly equbService: EqubService,
     private readonly configService: ConfigService,
+    private readonly translationService: TranslationService,
   ) {}
 
   @Start()
@@ -24,24 +27,34 @@ export class TelegramService {
     this.logger.log(`/start received from telegramId=${from?.id ?? 'unknown'}, payload=${ctx.startPayload ?? '(none)'}`);
     if (!from) return;
 
-    await this.usersService.findOrCreateByTelegramId({
+    // Telegram's language_code (e.g. "am", "am-ET") only sets the default
+    // for brand-new users; it never overrides a language they picked later.
+    const language = from.language_code?.toLowerCase().includes('am')
+      ? UserLanguage.AM
+      : UserLanguage.EN;
+
+    const user = await this.usersService.findOrCreateByTelegramId({
       telegramId: String(from.id),
       firstName: from.first_name,
       telegramUsername: from.username,
+      language,
     });
 
     const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
     this.logger.log(`MINI_APP_URL=${miniAppUrl || '(not set)'}`);
     const inviteCode = ctx.startPayload;
+    const openApp = this.translationService.t(user.language, 'button.openApp');
 
     if (inviteCode) {
       const equb = await this.equbService.findByInviteCode(inviteCode);
       const sent = await ctx.reply(
-        `Welcome to Sebsabi | ሰብሳቢ! 🎉\nYou were invited to "${equb.name}". Open the app to join.`,
+        this.translationService.t(user.language, 'welcome.invite', {
+          equbName: equb.name,
+        }),
         miniAppUrl
           ? Markup.inlineKeyboard([
               Markup.button.webApp(
-                'Open App',
+                openApp,
                 `${miniAppUrl}/join?code=${encodeURIComponent(inviteCode)}`,
               ),
             ])
@@ -52,9 +65,9 @@ export class TelegramService {
     }
 
     const sent = await ctx.reply(
-      `Welcome to Sebsabi | ሰብሳቢ! 🎉\nI am ready to help manage your Equb.`,
+      this.translationService.t(user.language, 'welcome.generic'),
       miniAppUrl
-        ? Markup.inlineKeyboard([Markup.button.webApp('Open App', miniAppUrl)])
+        ? Markup.inlineKeyboard([Markup.button.webApp(openApp, miniAppUrl)])
         : undefined,
     );
     await this.pinSilently(ctx, sent.message_id);

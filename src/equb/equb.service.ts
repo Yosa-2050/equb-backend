@@ -20,7 +20,12 @@ import { UpdateMyMembershipDto } from './dto/update-my-membership.dto';
 import { groupLabel } from './collab-group.util';
 import { CollabGroup } from './entities/collab-group.entity';
 import { CollabRole, EqubMember, EqubMemberRole } from './entities/equb-member.entity';
-import { Equb, EqubFrequency, EqubStatus } from './entities/equb.entity';
+import {
+  Equb,
+  EqubFrequency,
+  EqubStatus,
+  PaymentCollector,
+} from './entities/equb.entity';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
 
@@ -68,6 +73,7 @@ export class EqubService {
       totalAmount: dto.totalAmount,
       totalPot: toNumber(dto.monthlyAmount) * dto.durationMonths,
       frequency: dto.frequency ?? EqubFrequency.MONTHLY,
+      collector: dto.collector ?? PaymentCollector.WINNER,
       maxMembers: dto.maxMembers ?? null,
       reminderTime: dto.reminderTime ?? null,
       reminderDayOfWeek: dto.reminderDayOfWeek ?? null,
@@ -177,6 +183,7 @@ export class EqubService {
       totalAmount: toNumber(equb.totalAmount),
       durationMonths: equb.durationMonths,
       frequency: equb.frequency,
+      collector: equb.collector,
       maxMembers: equb.maxMembers,
       reminderTime: equb.reminderTime,
       reminderDayOfWeek: equb.reminderDayOfWeek,
@@ -233,6 +240,9 @@ export class EqubService {
     }
     if (dto.frequency !== undefined) {
       equb.frequency = dto.frequency;
+    }
+    if (dto.collector !== undefined) {
+      equb.collector = dto.collector;
     }
     if (dto.maxMembers !== undefined) {
       equb.maxMembers = dto.maxMembers;

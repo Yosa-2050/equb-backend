@@ -1,0 +1,20 @@
+{
+  "period.day": "ቀን",
+  "period.week": "ሳምንት",
+  "period.month": "ወር",
+  "welcome.invite": "ወደ ሰብሳቢ እንኳን በደህና መጡ! 🎉\nወደ \"{equbName}\" ተጋብዘዋል። ለመቀላቀል መተግበሪያውን ይክፈቱ።",
+  "welcome.generic": "ወደ ሰብሳቢ እንኳን በደህና መጡ! 🎉\nእቁብዎን ለማስተዳደር ዝግጁ ነኝ።",
+  "button.openApp": "መተግበሪያውን ክፈት",
+  "button.uploadReceipt": "ደረሰኝ ስቀል",
+  "button.viewLive": "በቀጥታ ይመልከቱ",
+  "button.viewResults": "ውጤቶችን ይመልከቱ",
+  "reminder.due": "⏰ ማስታወሻ: ለ{equbName} የ{period} {round} መዋጮዎ ገና አልተከፈለም።",
+  "reminder.title": "የክፍያ ማስታወሻ",
+  "lottery.announce": "🔴 ለ{equbName} ቀጥታ እጣ አሁን እየጀመረ ነው!",
+  "lottery.won.solo": "🎉 ለ{equbName} የ{period} {round} አሸንፈዋል!",
+  "lottery.won.leader": "🎉 ቡድንዎ ለ{equbName} የ{period} {round} አሸንፏል! የቡድኑ መሪ እርስዎ ነዎት — ገንዘቡን ሰብስበው ያከፋፍላሉ።",
+  "lottery.won.member": "🎉 ቡድንዎ ለ{equbName} የ{period} {round} አሸንፏል! {leaderName} ሰብስቦ ከእርስዎ ጋር ያካፍላል።",
+  "lottery.won.title": "የእጣ አሸናፊ ታውቋል",
+  "lottery.complete": "ሙሉውን መርሃ ግብር በመተግበሪያው ውስጥ ለማየት ከታች ይንኩ 👇",
+  "lottery.complete.title": "እጣ ተጠናቋል"
+}

@@ -1,7 +1,7 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
 import { Repository } from 'typeorm';
-import { User } from './entities/user.entity';
+import { User, UserLanguage } from './entities/user.entity';
 
 @Injectable()
 export class UsersService {
@@ -16,6 +16,9 @@ export class UsersService {
     fullName?: string;
     telegramUsername?: string;
     avatarUrl?: string;
+    // Only applied when creating a brand-new user (e.g. from Telegram's
+    // language_code on /start). Never overrides an existing user's choice.
+    language?: UserLanguage;
   }): Promise<User> {
     const existing = await this.usersRepository.findOne({
       where: { telegramId: data.telegramId },
@@ -27,10 +30,14 @@ export class UsersService {
       return this.usersRepository.save(existing);
     }
 
-    const { firstName, ...rest } = data;
+    const { firstName, language, ...rest } = data;
     const fullName =
       data.fullName ?? firstName ?? data.telegramUsername ?? 'Telegram User';
-    const user = this.usersRepository.create({ ...rest, fullName });
+    const user = this.usersRepository.create({
+      ...rest,
+      fullName,
+      language: language ?? UserLanguage.AM,
+    });
     return this.usersRepository.save(user);
   }
 
@@ -40,7 +47,7 @@ export class UsersService {
 
   async update(
     id: string,
-    data: { fullName?: string; phone?: string },
+    data: { fullName?: string; phone?: string; language?: UserLanguage },
   ): Promise<User> {
     await this.usersRepository.update(id, data);
     return this.usersRepository.findOneOrFail({ where: { id } });

@@ -46,6 +46,7 @@ export class ProfileService {
       telegramUsername: user.telegramUsername,
       phone: user.phone,
       avatarUrl: user.avatarUrl,
+      language: user.language,
       createdEqubs,
       joinedEqubs: memberships.length,
       totalSaved,
@@ -56,6 +57,7 @@ export class ProfileService {
     await this.usersService.update(userId, {
       fullName: dto.fullName,
       phone: dto.phone,
+      language: dto.language,
     });
     return this.getProfile(userId);
   }

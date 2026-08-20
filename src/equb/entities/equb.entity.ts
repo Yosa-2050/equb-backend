@@ -21,6 +21,11 @@ export enum EqubFrequency {
   MONTHLY = 'monthly',
 }
 
+export enum PaymentCollector {
+  ADMIN = 'admin',
+  WINNER = 'winner',
+}
+
 @Entity('equbs')
 export class Equb {
   @PrimaryGeneratedColumn('uuid')
@@ -92,6 +97,16 @@ export class Equb {
   // Prevents the scheduler from sending the same automatic reminder twice.
   @Column({ type: 'timestamptz', nullable: true })
   lastReminderSentAt!: Date | null;
+
+  // Who receives contributions and approves/rejects receipts each round:
+  // the round's lottery winner (default, existing behavior) or always the
+  // equb admin.
+  @Column({
+    type: 'enum',
+    enum: PaymentCollector,
+    default: PaymentCollector.WINNER,
+  })
+  collector!: PaymentCollector;
 
   @ManyToOne(() => User)
   @JoinColumn({ name: 'adminId' })

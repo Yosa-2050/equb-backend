@@ -1,0 +1,20 @@
+{
+  "period.day": "day",
+  "period.week": "week",
+  "period.month": "month",
+  "welcome.invite": "Welcome to Sebsabi | ሰብሳቢ! 🎉\nYou were invited to \"{equbName}\". Open the app to join.",
+  "welcome.generic": "Welcome to Sebsabi | ሰብሳቢ! 🎉\nI am ready to help manage your Equb.",
+  "button.openApp": "Open App",
+  "button.uploadReceipt": "Upload Receipt",
+  "button.viewLive": "View Live",
+  "button.viewResults": "View Results",
+  "reminder.due": "⏰ Reminder: your {period} {round} contribution for {equbName} is still due.",
+  "reminder.title": "Payment Reminder",
+  "lottery.announce": "🔴 Live lottery for {equbName} is starting now!",
+  "lottery.won.solo": "🎉 You won {period} {round} for {equbName}!",
+  "lottery.won.leader": "🎉 Your group won {period} {round} for {equbName}! You're the group leader — you'll collect and split the payout.",
+  "lottery.won.member": "🎉 Your group won {period} {round} for {equbName}! {leaderName} will collect and split it with you.",
+  "lottery.won.title": "Lottery Winner Announced",
+  "lottery.complete": "Tap below to view the full schedule in the app 👇",
+  "lottery.complete.title": "Lottery Complete"
+}
