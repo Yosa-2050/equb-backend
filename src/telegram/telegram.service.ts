@@ -27,17 +27,15 @@ export class TelegramService {
     this.logger.log(`/start received from telegramId=${from?.id ?? 'unknown'}, payload=${ctx.startPayload ?? '(none)'}`);
     if (!from) return;
 
-    // Telegram's language_code (e.g. "am", "am-ET") only sets the default
-    // for brand-new users; it never overrides a language they picked later.
-    const language = from.language_code?.toLowerCase().includes('am')
-      ? UserLanguage.AM
-      : UserLanguage.EN;
-
+    // Amharic-first by default: most of our users have their Telegram
+    // client set to English but prefer Amharic for the equb itself, so we
+    // deliberately ignore Telegram's language_code here. New users can
+    // switch to English manually via the Profile page's language toggle.
     const user = await this.usersService.findOrCreateByTelegramId({
       telegramId: String(from.id),
       firstName: from.first_name,
       telegramUsername: from.username,
-      language,
+      language: UserLanguage.AM,
     });
 
     const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
