@@ -45,9 +45,15 @@ export class UsersService {
     return this.usersRepository.findOne({ where: { id } });
   }
 
+  async findByTelegramId(telegramId: string): Promise<User | null> {
+    return this.usersRepository.findOne({ where: { telegramId } });
+  }
+
+  // displayName is the only editable "name" field here — fullName stays
+  // Telegram-sourced and is never touched by user/admin edits.
   async update(
     id: string,
-    data: { fullName?: string; phone?: string; language?: UserLanguage },
+    data: { displayName?: string; phone?: string; language?: UserLanguage },
   ): Promise<User> {
     await this.usersRepository.update(id, data);
     return this.usersRepository.findOneOrFail({ where: { id } });
@@ -56,10 +62,10 @@ export class UsersService {
   // Public-safe roster: excludes phone/telegramId, which are personal
   // contact details other members have no reason to see.
   async findAll(): Promise<
-    Pick<User, 'id' | 'fullName' | 'telegramUsername' | 'avatarUrl'>[]
+    Pick<User, 'id' | 'fullName' | 'displayName' | 'telegramUsername' | 'avatarUrl'>[]
   > {
     return this.usersRepository.find({
-      select: ['id', 'fullName', 'telegramUsername', 'avatarUrl'],
+      select: ['id', 'fullName', 'displayName', 'telegramUsername', 'avatarUrl'],
       order: { createdAt: 'DESC' },
     });
   }

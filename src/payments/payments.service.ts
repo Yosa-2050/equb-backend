@@ -18,6 +18,8 @@ import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { CloudinaryService } from '../cloudinary/cloudinary.service';
 import { TranslationService } from '../i18n/translation.service';
+import { UsersService } from '../users/users.service';
+import { displayNameOf } from '../users/user-display.util';
 import { Payment, PaymentStatus } from './entities/payment.entity';
 
 const toNumber = (value: string | number): number => Number(value);
@@ -33,6 +35,7 @@ export class PaymentsService {
     private readonly notificationsService: NotificationsService,
     private readonly cloudinaryService: CloudinaryService,
     private readonly translationService: TranslationService,
+    private readonly usersService: UsersService,
     private readonly configService: ConfigService,
     @InjectBot() private readonly bot: Telegraf,
   ) {}
@@ -95,7 +98,7 @@ export class PaymentsService {
         return {
           id: p.id,
           memberId: member.userId,
-          fullName: member.user.fullName,
+          fullName: displayNameOf(member.user),
           telegramUsername: member.user.telegramUsername,
           amount: toNumber(p.amount),
           status: p.status,
@@ -129,7 +132,7 @@ export class PaymentsService {
             defaultAmount > 0 ? (contribution / defaultAmount) * totalPot : 0;
           return {
             memberId: m.userId,
-            fullName: m.user.fullName,
+            fullName: displayNameOf(m.user),
             contributionAmount: contribution,
             share,
           };
@@ -156,7 +159,7 @@ export class PaymentsService {
       recipient: recipient?.user
         ? {
             memberId: recipient.userId,
-            fullName: recipient.user.fullName,
+            fullName: displayNameOf(recipient.user),
             telegramUsername: recipient.user.telegramUsername,
             isGroup: !!groupMembers,
             account: {
@@ -234,6 +237,57 @@ export class PaymentsService {
     return this.submit(equbId, actorId, { amount, receiptImageUrl });
   }
 
+  // Looks up a payment for the bot's in-chat "Upload Here" flow, verifying
+  // the Telegram user who clicked the button actually owns this payment.
+  async getPaymentForBotUpload(
+    paymentId: string,
+    telegramId: string,
+  ): Promise<{ equbName: string } | null> {
+    const payment = await this.paymentRepository.findOne({
+      where: { id: paymentId },
+      relations: ['equbMember', 'equbMember.user'],
+    });
+    if (!payment || payment.equbMember.user.telegramId !== telegramId) {
+      return null;
+    }
+    const equb = await this.equbService.findOne(payment.equbMember.equbId);
+    return { equbName: equb.name };
+  }
+
+  // Attaches a receipt photo sent directly in the Telegram chat (as an
+  // alternative to the Mini App upload) to an existing payment, and lets
+  // the admin know it's waiting for review.
+  async attachReceiptFromBot(
+    paymentId: string,
+    receiptImageUrl: string,
+  ): Promise<void> {
+    const payment = await this.paymentRepository.findOne({
+      where: { id: paymentId },
+      relations: ['equbMember', 'equbMember.user'],
+    });
+    if (!payment) {
+      throw new NotFoundException('Payment not found');
+    }
+    payment.receiptImageUrl = receiptImageUrl;
+    payment.status = PaymentStatus.PENDING;
+    payment.receiptDate = new Date().toISOString().slice(0, 10);
+    payment.rejectReason = null;
+    await this.paymentRepository.save(payment);
+
+    const equb = await this.equbService.findOne(payment.equbMember.equbId);
+    const admin = await this.usersService.findById(equb.adminId);
+    await this.notificationsService.create({
+      userId: equb.adminId,
+      title: this.translationService.t(admin?.language, 'receipt.adminNotifyTitle'),
+      description: this.translationService.t(admin?.language, 'receipt.adminNotifyBody', {
+        memberName: displayNameOf(payment.equbMember.user),
+        equbName: equb.name,
+      }),
+      type: NotificationType.INFO,
+      equbId: equb.id,
+    });
+  }
+
   async approve(paymentId: string, actorId: string) {
     const payment = await this.paymentRepository.findOne({
       where: { id: paymentId },
@@ -258,6 +312,7 @@ export class PaymentsService {
       title: 'Payment Approved',
       description: `Your payment of ${toNumber(payment.amount)} ETB for ${equb.name} was approved.`,
       type: NotificationType.SUCCESS,
+      equbId: equb.id,
     });
 
     // Only the live round auto-advances the equb. Clearing a LATE debt in a
@@ -312,6 +367,7 @@ export class PaymentsService {
             ? `${equb.name} has finished all ${equb.durationMonths} ${label.toLowerCase()}s. Thanks for participating!`
             : `${label} ${completedMonth} has ended for ${equb.name}. ${label} ${equb.currentRound} has started.`,
           type: NotificationType.SUCCESS,
+          equbId: equb.id,
         }),
       ),
     );
@@ -343,6 +399,7 @@ export class PaymentsService {
         ? `Your payment receipt for ${equb.name} was rejected: ${reason}`
         : `Your payment receipt for ${equb.name} was rejected.`,
       type: NotificationType.WARNING,
+      equbId: equb.id,
     });
     return saved;
   }
@@ -371,25 +428,43 @@ export class PaymentsService {
         : recipient;
 
     const payments = await this.paymentRepository.find({ where: { month } });
-    const unpaid = payerMembers.filter((member) => {
-      const payment = payments.find((p) => p.equbMemberId === member.id);
-      return !payment || payment.status === PaymentStatus.PENDING || payment.status === PaymentStatus.REJECTED;
-    });
+    // Every unpaid member needs a real payment row so the "Upload Here"
+    // button always has a concrete paymentId to attach the receipt to.
+    const unpaid: { member: EqubMember; payment: Payment }[] = [];
+    for (const member of payerMembers) {
+      let payment = payments.find((p) => p.equbMemberId === member.id);
+      if (payment && payment.status !== PaymentStatus.PENDING && payment.status !== PaymentStatus.REJECTED) {
+        continue;
+      }
+      if (!payment) {
+        payment = await this.paymentRepository.save(
+          this.paymentRepository.create({
+            equbMemberId: member.id,
+            recipientId: recipient?.id ?? null,
+            month,
+            amount: this.memberAmount(equb, member),
+            status: PaymentStatus.PENDING,
+          }),
+        );
+      }
+      unpaid.push({ member, payment });
+    }
 
     const accountInfo = collectorMember
-      ? `${collectorMember.accountHolderName ?? collectorMember.user.fullName} — ${collectorMember.accountProvider ?? 'account'}: ${collectorMember.accountNumber ?? 'N/A'}`
+      ? `${collectorMember.accountHolderName ?? displayNameOf(collectorMember.user)} — ${collectorMember.accountProvider ?? 'account'}: ${collectorMember.accountNumber ?? 'N/A'}`
       : 'the recipient (not yet drawn)';
 
     const miniAppUrl = this.configService.get<string>('MINI_APP_URL', '');
     const link = `${miniAppUrl}/Equb/${equbId}`;
 
     await Promise.all(
-      unpaid.map(async (member) => {
+      unpaid.map(async ({ member, payment }) => {
         await this.notificationsService.create({
           userId: member.userId,
           title: this.translationService.t(member.user.language, 'reminder.title'),
           description: `Pay your ${this.memberAmount(equb, member)} ETB contribution for ${equb.name} (${periodLabel(equb.frequency).toLowerCase()} ${month}) to: ${accountInfo}`,
           type: NotificationType.WARNING,
+          equbId,
         });
 
         if (miniAppUrl && member.user?.telegramId) {
@@ -405,10 +480,18 @@ export class PaymentsService {
                 round: month,
               }),
               Markup.inlineKeyboard([
-                Markup.button.webApp(
-                  this.translationService.t(member.user.language, 'button.uploadReceipt'),
-                  link,
-                ),
+                [
+                  Markup.button.webApp(
+                    this.translationService.t(member.user.language, 'button.uploadReceipt'),
+                    link,
+                  ),
+                ],
+                [
+                  Markup.button.callback(
+                    this.translationService.t(member.user.language, 'button.uploadHere'),
+                    `upload_receipt_here:${payment.id}`,
+                  ),
+                ],
               ]),
             );
           } catch {

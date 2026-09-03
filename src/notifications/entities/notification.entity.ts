@@ -7,6 +7,7 @@ import {
   PrimaryGeneratedColumn,
 } from 'typeorm';
 import { User } from '../../users/entities/user.entity';
+import { Equb } from '../../equb/entities/equb.entity';
 
 export enum NotificationType {
   SUCCESS = 'success',
@@ -41,6 +42,15 @@ export class Notification {
 
   @Column({ default: false })
   read!: boolean;
+
+  // Which equb this notification is about, if any (join/lottery/payment
+  // events all belong to one; a few system-level notices don't).
+  @ManyToOne(() => Equb, { nullable: true, onDelete: 'CASCADE' })
+  @JoinColumn({ name: 'equbId' })
+  equb!: Equb | null;
+
+  @Column({ type: 'uuid', nullable: true })
+  equbId!: string | null;
 
   @CreateDateColumn()
   createdAt!: Date;

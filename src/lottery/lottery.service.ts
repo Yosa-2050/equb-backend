@@ -12,6 +12,7 @@ import {
   EqubMemberAssignmentSource,
 } from '../equb/entities/equb-member.entity';
 import { periodLabel } from '../common/period-label';
+import { displayNameOf } from '../users/user-display.util';
 import { NotificationsService } from '../notifications/notifications.service';
 import { NotificationType } from '../notifications/entities/notification.entity';
 import { TranslationService } from '../i18n/translation.service';
@@ -55,13 +56,13 @@ function unitToResult(unit: EqubMember[], number: number): DrawResultDto {
   return {
     memberId: leader.id,
     number,
-    fullName: isGroup ? groupLabel(unit) : leader.user.fullName,
+    fullName: isGroup ? groupLabel(unit) : displayNameOf(leader.user),
     telegramUsername: leader.user.telegramUsername,
     month: leader.order,
     assignmentSource: leader.assignmentSource,
     isGroup,
     groupMembers: isGroup
-      ? unit.map((m) => ({ memberId: m.id, fullName: m.user.fullName }))
+      ? unit.map((m) => ({ memberId: m.id, fullName: displayNameOf(m.user) }))
       : undefined,
   };
 }
@@ -96,6 +97,7 @@ export class LotteryService {
           title: 'Live Lottery Starting',
           description: `The live draw for ${equb.name} is starting now — join in!`,
           type: NotificationType.INFO,
+          equbId,
         });
 
         if (miniAppUrl && m.user?.telegramId) {
@@ -199,9 +201,10 @@ export class LotteryService {
             equbName: equb.name,
             period,
             round: nextMonth,
-            leaderName: leader.user.fullName,
+            leaderName: displayNameOf(leader.user),
           }),
           type: NotificationType.SUCCESS,
+          equbId,
         });
       }),
     );
@@ -251,7 +254,7 @@ export class LotteryService {
 
     const saved = await this.equbMemberRepository.save(unit);
     const result = unitToResult(saved, 1);
-    const adminName = equb.admin?.fullName ?? 'Admin';
+    const adminName = equb.admin ? displayNameOf(equb.admin) : 'Admin';
     const recipientName = result.fullName;
     await this.broadcastToMembers(
       equbId,
@@ -276,6 +279,7 @@ export class LotteryService {
           title,
           description,
           type,
+          equbId,
         }),
       ),
     );
@@ -296,7 +300,7 @@ export class LotteryService {
     const schedule = finalUnits
       .map((unit) => {
         const leader = unitLeader(unit);
-        const who = unit.length > 1 ? groupLabel(unit) : leader.user.fullName;
+        const who = unit.length > 1 ? groupLabel(unit) : displayNameOf(leader.user);
         return `${label} ${leader.order}: ${who}`;
       })
       .join('\n');
@@ -310,6 +314,7 @@ export class LotteryService {
           title: this.translationService.t(m.user.language, 'lottery.complete.title'),
           description: `The draw for ${equbName} is complete!\n${schedule}`,
           type: NotificationType.SUCCESS,
+          equbId,
         });
 
         if (miniAppUrl && m.user?.telegramId) {

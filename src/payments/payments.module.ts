@@ -7,6 +7,7 @@ import { Equb } from '../equb/entities/equb.entity';
 import { NotificationsModule } from '../notifications/notifications.module';
 import { CloudinaryModule } from '../cloudinary/cloudinary.module';
 import { I18nModule } from '../i18n/i18n.module';
+import { UsersModule } from '../users/users.module';
 import { Payment } from './entities/payment.entity';
 import { PaymentsController } from './payments.controller';
 import { PaymentsService } from './payments.service';
@@ -18,6 +19,7 @@ import { PaymentsService } from './payments.service';
     NotificationsModule,
     CloudinaryModule,
     I18nModule,
+    UsersModule,
   ],
   controllers: [PaymentsController],
   providers: [PaymentsService, EqubSchedulerService],

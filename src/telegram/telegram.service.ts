@@ -27,6 +27,8 @@ export class TelegramService {
     this.logger.log(`/start received from telegramId=${from?.id ?? 'unknown'}, payload=${ctx.startPayload ?? '(none)'}`);
     if (!from) return;
 
+    const isNewUser = !(await this.usersService.findByTelegramId(String(from.id)));
+
     // Amharic-first by default: most of our users have their Telegram
     // client set to English but prefer Amharic for the equb itself, so we
     // deliberately ignore Telegram's language_code here. New users can
@@ -58,7 +60,9 @@ export class TelegramService {
             ])
           : undefined,
       );
-      await this.pinSilently(ctx, sent.message_id);
+      if (isNewUser) {
+        await this.pinSilently(ctx, sent.message_id);
+      }
       return;
     }
 
@@ -68,7 +72,9 @@ export class TelegramService {
         ? Markup.inlineKeyboard([Markup.button.webApp(openApp, miniAppUrl)])
         : undefined,
     );
-    await this.pinSilently(ctx, sent.message_id);
+    if (isNewUser) {
+      await this.pinSilently(ctx, sent.message_id);
+    }
   }
 
   
@@ -90,5 +96,12 @@ export class TelegramService {
     const equbId = ctx.match[1];
     await ctx.answerCbQuery();
     await ctx.scene.enter('member-info', { equbId });
+  }
+
+  @Action(/^upload_receipt_here:(.+)$/)
+  async onUploadReceiptHere(ctx: SceneCapableContext & { match: RegExpExecArray }) {
+    const paymentId = ctx.match[1];
+    await ctx.answerCbQuery();
+    await ctx.scene.enter('receipt-upload', { paymentId });
   }
 }

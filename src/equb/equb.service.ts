@@ -10,6 +10,7 @@ import { InjectBot } from 'nestjs-telegraf';
 import { Markup, Telegraf } from 'telegraf';
 import { In, Repository } from 'typeorm';
 import { User } from '../users/entities/user.entity';
+import { displayNameOf } from '../users/user-display.util';
 import { Payment } from '../payments/entities/payment.entity';
 import { AdminUpdateMemberDto } from './dto/admin-update-member.dto';
 import { CreateCollabGroupDto } from './dto/create-collab-group.dto';
@@ -143,7 +144,7 @@ export class EqubService {
       .map((m, index) => ({
         id: m.id,
         number: index + 1,
-        fullName: m.user.fullName,
+        fullName: displayNameOf(m.user),
         telegramUsername: m.user.telegramUsername,
         phone: m.user.phone,
         role: m.role,
@@ -200,7 +201,7 @@ export class EqubService {
       createdAt: equb.createdAt,
       admin: {
         id: adminMember?.userId ?? equb.adminId,
-        fullName: equb.admin?.fullName,
+        fullName: displayNameOf(equb.admin),
         telegramUsername: equb.admin?.telegramUsername,
       },
       isAdmin: !!adminMember && adminMember.userId === actorId,
@@ -315,7 +316,7 @@ export class EqubService {
 
     if (dto.fullName !== undefined || dto.phone !== undefined) {
       await this.userRepository.update(userId, {
-        ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
+        ...(dto.fullName !== undefined ? { displayName: dto.fullName } : {}),
         ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
       });
     }
@@ -353,7 +354,7 @@ export class EqubService {
 
     if (dto.fullName !== undefined || dto.phone !== undefined) {
       await this.userRepository.update(member.userId, {
-        ...(dto.fullName !== undefined ? { fullName: dto.fullName } : {}),
+        ...(dto.fullName !== undefined ? { displayName: dto.fullName } : {}),
         ...(dto.phone !== undefined ? { phone: dto.phone } : {}),
       });
     }
@@ -389,6 +390,7 @@ export class EqubService {
           title: dto.title,
           description: dto.message,
           type: NotificationType.INFO,
+          equbId,
         }),
       ),
     );
@@ -590,8 +592,11 @@ export class EqubService {
         }),
       );
     } else {
+      // Matched an existing real user (by username/phone) — set their
+      // app-specific display name rather than overwriting their real
+      // Telegram name.
       await this.userRepository.update(user.id, {
-        fullName,
+        displayName: fullName,
         ...(telegramUsername ? { telegramUsername } : {}),
         ...(phone ? { phone } : {}),
       });
@@ -684,6 +689,7 @@ export class EqubService {
       title: 'Equb Joined',
       description: `You joined "${equb.name}". Welcome!`,
       type: NotificationType.SUCCESS,
+      equbId: equb.id,
     });
 
     // Prompt for payout info (phone/account) right away via the bot, since
@@ -713,8 +719,9 @@ export class EqubService {
         this.notificationsService.create({
           userId: m.userId,
           title: 'New Member Joined',
-          description: `${newMember.fullName} joined ${equb.name}.`,
+          description: `${displayNameOf(newMember)} joined ${equb.name}.`,
           type: NotificationType.INFO,
+          equbId: equb.id,
         }),
       ),
     );
@@ -736,6 +743,7 @@ export class EqubService {
           title: 'New Member Added',
           description: `${memberName} was added to ${equb.name}.`,
           type: NotificationType.INFO,
+          equbId: equb.id,
         }),
       ),
     );
@@ -751,7 +759,7 @@ export class EqubService {
   }
 
   private unitLabel(unit: EqubMember[]): string {
-    return unit.length > 1 ? groupLabel(unit) : unit[0].user.fullName;
+    return unit.length > 1 ? groupLabel(unit) : displayNameOf(unit[0].user);
   }
 
   private frequencyLabel(frequency: EqubFrequency): string {
@@ -772,6 +780,7 @@ export class EqubService {
           title,
           description,
           type,
+          equbId,
         }),
       ),
     );
@@ -831,7 +840,7 @@ export class EqubService {
       isPublic: equb.isPublic,
       admin: {
         id: equb.adminId,
-        fullName: equb.admin?.fullName,
+        fullName: displayNameOf(equb.admin),
         telegramUsername: equb.admin?.telegramUsername,
       },
       membersCount,

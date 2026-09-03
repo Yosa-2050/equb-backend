@@ -1,4 +1,5 @@
 import { CollabRole, EqubMember } from './entities/equb-member.entity';
+import { displayNameOf } from '../users/user-display.util';
 
 export interface RoundResolution {
   recipient: EqubMember | null;
@@ -30,7 +31,9 @@ export function resolveRound(
   };
 }
 
-export function groupLabel(members: { user: { fullName: string } }[]): string {
-  const names = members.map((m) => m.user.fullName.split(' ')[0]);
+export function groupLabel(
+  members: { user: { fullName: string; displayName: string | null } }[],
+): string {
+  const names = members.map((m) => displayNameOf(m.user).split(' ')[0]);
   return `Group: ${names.join(' & ')}`;
 }

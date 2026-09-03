@@ -21,6 +21,9 @@ export class User {
   @Column()
   fullName!: string;
 
+  @Column({ type: 'varchar', nullable: true })
+  displayName!: string | null;
+
   @Column({ nullable: true })
   telegramUsername!: string;
 
